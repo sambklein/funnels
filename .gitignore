@@ -8,7 +8,8 @@
 /jobs
 /experiments/data
 /experiments/logs
-/data/downloads
+surVAE/data/downloads
+collate/data
 /data/saved_models
 /data/slims
 submit.txt

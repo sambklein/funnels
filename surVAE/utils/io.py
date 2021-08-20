@@ -26,12 +26,18 @@ def get_top_dir():
         raise ValueError('Unknown path for saving images {}'.format(p))
     return sv_ims
 
+def get_data_root():
+    return f'{get_top_dir()}/surVAE/data/downloads'
+
+def get_image_data_root(name):
+    return f'{get_data_root()}/images/{name}'
+
 class save_object():
 
     def __init__(self, directory, exp_name=None, args=None):
         self.image_dir = f'{get_top_dir()}/images/{directory}'
         self.exp_name = exp_name
-        self.json_info = f"{self.image_dir}/{exp_name}_exp_info.json"
+        self.json_info = f"{self.image_dir}/exp_info_{exp_name}.json"
         os.makedirs(self.image_dir, exist_ok=True)
         if args is not None:
             self.register_experiment(args)
@@ -40,12 +46,12 @@ class save_object():
     def save_name(self, name, directory=None, extension='png'):
         if directory is None:
             image_dir = self.image_dir
-            exp_name = self.exp_name + '_'
+            exp_name = '_' + self.exp_name
         else:
             image_dir = f'{get_top_dir()}/images/{directory}'
             exp_name = ''
             os.makedirs(image_dir, exist_ok=True)
-        return f'{image_dir}/{exp_name}{name}.{extension}'
+        return f'{image_dir}/{name}{exp_name}.{extension}'
 
 
     def register_experiment(self, args):
@@ -54,8 +60,9 @@ class save_object():
         with open(self.json_info, "w") as file_name:
             json.dump(json_dict, file_name)
 
-
-    def read_experiment(self, args):
-        with open(self.json_info, "w") as file_name:
+    def read_experiment(self, json_info):
+        with open(json_info, "r") as file_name:
             json_dict = json.load(file_name)
-        return json.loads(json_dict)
+        dict = json.loads(json_dict)
+        self.exp_name = dict['outputname']
+        return dict

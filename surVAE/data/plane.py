@@ -13,6 +13,48 @@ from torch.utils.data import Dataset
 
 # import nsf_utils as utils
 
+def load_plane_dataset(name, num_points, flip_axes=False, scale=True, npad=0):
+    """Loads and returns a plane dataset.
+    Args:
+        name: string, the name of the dataset.
+        num_points: int, the number of points the dataset should have,
+        flip_axes: bool, flip x and y axes if True.
+    Returns:
+        A Dataset object, the requested dataset.
+    Raises:
+         ValueError: If `name` an unknown dataset.
+    """
+
+    try:
+        dataset = {
+            'gaussian': GaussianDataset,
+            'crescent': CrescentDataset,
+            'crescent_cubed': CrescentCubedDataset,
+            'sine_wave': SineWaveDataset,
+            'abs': AbsDataset,
+            'sign': SignDataset,
+            'four_circles': FourCircles,
+            'diamond': DiamondDataset,
+            'two_spirals': TwoSpiralsDataset,
+            'checkerboard': CheckerboardDataset,
+            'corners': CornersDataset,
+            'eightgauss': EightGaussiansDataset,
+            'checkerboard_modes': CheckerboardModes,
+
+        }[name](num_points=num_points, flip_axes=flip_axes)
+        if scale:
+            # Scale data to be between zero and one
+            # dataset.data = 2 * (dataset.data - dataset.data.min()) / (dataset.data.max() - dataset.data.min()) - 1
+            dataset.data = (dataset.data + 4) / 4 - 1
+        if npad > 0:
+            padder = torch.distributions.uniform.Uniform(torch.zeros(npad), torch.ones(npad), validate_args=None)
+            pads = padder.sample([num_points])
+            dataset.data = torch.cat((dataset.data, pads), 1)
+        return dataset
+
+    except KeyError:
+        raise ValueError('Unknown dataset: {}'.format(name))
+
 
 class PlaneDataset(Dataset):
     def __init__(self, num_points, flip_axes=False):
