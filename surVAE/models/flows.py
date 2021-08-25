@@ -2,7 +2,7 @@ from nflows import transforms
 
 
 def get_transform(inp_dim=1, nodes=64, num_blocks=2, nstack=2, tails=None, tail_bound=1., num_bins=10,
-                  context_features=1, lu=1):
+                  context_features=1, lu=1, bnorm=1):
     transform_list = []
     for i in range(nstack):
 
@@ -17,6 +17,9 @@ def get_transform(inp_dim=1, nodes=64, num_blocks=2, nstack=2, tails=None, tail_
                                                                                tail_bound=tb, num_bins=num_bins,
                                                                                tails=tails,
                                                                                context_features=context_features)]
+        # if bnorm:
+        #     transform_list += [transforms.BatchNorm(inp_dim)]
+
         if (tails is None) and (tail_bound is not None) and (i == nstack - 1):
             transform_list += [transforms.standard.PointwiseAffineTransform(-tail_bound, 2 * tail_bound)]
 

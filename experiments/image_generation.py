@@ -18,6 +18,7 @@ from surVAE.utils import autils
 import time
 import matplotlib.pyplot as plt
 import os
+import numpy as np
 
 import argparse
 
@@ -34,7 +35,7 @@ def parse_args():
                         help='Load a model?')
 
     # Model set up
-    parser.add_argument('--model', type=str, default='funnel',
+    parser.add_argument('--model', type=str, default='funnel_conv',
                         help='The dimension of the input data.')
 
     # Dataset and training parameters
@@ -61,12 +62,12 @@ pad = 2  # For mnist-like datasets
 
 # Model architecture
 flow_type = args.model
-n_funnels = 3
+n_funnels = 1
 
-conv_width = 2
+conv_width = 5
 # steps_per_level = 10
 steps_per_level = 5
-levels = 4
+levels = 3
 multi_scale = True
 actnorm = True
 
@@ -280,8 +281,9 @@ class RotateImageTransform(transforms.Transform):
 def funnel_conv(num_channels, hidden_channels):
     step_transforms = []
 
-    if actnorm:
-        step_transforms.append(transforms.ActNorm(num_channels))
+    # TODO: the RQ-NSF rquires data to be in [-1, 1]
+    # if actnorm:
+    #     step_transforms.append(transforms.ActNorm(num_channels))
 
     step_transforms.extend([
         NByOneConv(num_channels, hidden_features=hidden_channels, width=conv_width, num_blocks=num_res_blocks,
@@ -356,9 +358,9 @@ def create_transform(size_in, size_out):
         for i in range(n_funnels):
             all_transforms += [
                 funnel_conv(hc[i], hidden_channels=hc[i + 1]),
-                RotateImageTransform(),
-                funnel_conv(hc[i], hidden_channels=hc[i + 1]),
-                RotateImageTransform(),
+                # RotateImageTransform(),
+                # funnel_conv(hc[i], hidden_channels=hc[i + 1]),
+                # RotateImageTransform(),
             ]
 
         c, h, w = c_out, h_out, w_out
@@ -598,7 +600,12 @@ def train_and_generate_images():
     train_dataset, val_dataset, (c, h, w) = get_image_data(dataset, num_bits, valid_frac=0.1)
 
     if flow_type == 'funnel_conv':
-        c_out, h_out, w_out = c, int(h / conv_width ** n_funnels), int(w / conv_width ** n_funnels)
+        # c_out, h_out, w_out = c, int(h / conv_width ** n_funnels), int(w / conv_width ** n_funnels)
+        # TODO: when you fix this it should be ceil not floor, for now you are dropping a row of pixels to make it even
+        # for the squeezing operation to work how it should
+        c_out, h_out, w_out = c, \
+                              h, \
+                              int(np.floor(w * ((conv_width - 1) / conv_width) ** n_funnels))
     elif flow_type == 'funnel_non_conv':
         c_out, h_out, w_out = 256, 1, 1
     elif flow_type == 'funnel':

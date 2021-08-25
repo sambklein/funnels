@@ -83,6 +83,17 @@ class SurNSF(nflows.transforms.Transform):
         f_return = torch.cat((input_dropped, input_mapped), 1)
         return f_return, likelihood_contribution
 
+class IdentityTransform(nflows.transforms.Transform):
+    """
+    An N x 1 funnel convolution with the stride fixed to N.
+    """
+
+    def forward(self, inputs, context=None):
+        return inputs, torch.zeros(inputs.shape[0]).to(inputs.device)
+
+    def inverse(self, inputs, context=None):
+        return inputs, torch.zeros(inputs.shape[0]).to(inputs.device)
+
 
 # TODO: refactor this to be a single channel convolution, then build a many channel version on top
 class NByOneConv(nflows.transforms.Transform):
@@ -94,12 +105,16 @@ class NByOneConv(nflows.transforms.Transform):
                  num_bins=10, tail_bound=1., tails='linear', nstack=10, **kwargs):
         super(NByOneConv, self).__init__()
 
+        # nstack = int(nstack / 2)
+        # self.component_mixer = get_transform(inp_dim=width, tails='linear', context_features=None,
+        #                                      tail_bound=tail_bound, nstack=nstack, nodes=hidden_features)
+        self.component_mixer = IdentityTransform()
+
         # TODO: need to generate a transformer for every channel
         self.num_channels = num_channels
         self.width = width
         # TODO: need to implement hidden_channels kwargs?
-        inp_dim = width - 1
-        nstack = int(nstack / 2)
+        inp_dim = 1
 
         transform_list = []
         for i in range(nstack):
@@ -109,53 +124,63 @@ class NByOneConv(nflows.transforms.Transform):
                                                                                    tail_bound=tail_bound,
                                                                                    num_bins=num_bins,
                                                                                    tails=tails,
-                                                                                   context_features=1)]
+                                                                                   context_features=width - 1)]
+
+            transform_list += [transforms.BatchNorm(inp_dim)]
 
             transform_list += [transforms.ReversePermutation(inp_dim)]
 
         flow_transform = transforms.CompositeTransform(transform_list[:-1])
         base_dist = nflows.distributions.StandardNormal([inp_dim])
         self.one_dim_flow = flows.Flow(flow_transform, base_dist)
-        self.component_mixer = get_transform(inp_dim=width, tails='linear', context_features=None,
-                                             tail_bound=tail_bound, nstack=nstack, nodes=hidden_features)
-        self.transform = get_transform(inp_dim=1, context_features=width - 1, tails='linear', nodes=hidden_features,
+        self.transform = get_transform(inp_dim=width - 1, context_features=1, tails='linear', nodes=hidden_features,
                                        tail_bound=tail_bound, nstack=nstack)
 
-    def forward(self, inputs, context=None):
+    def _unpadded_forward(self, inputs, context=None):
         if inputs.dim() != 4:
             not_an_image_exception()
         batch_size, c, h, w = inputs.shape
-        if h * w % self.width:
-            convolving_not_possible()
-        new_w = int(w / self.width)
+        # if h * w % self.width:
+        #     convolving_not_possible()
+        # new_w = w - int(w / self.width)
+        new_w = w - w // self.width
         output = torch.zeros((c, batch_size, h, new_w))
         likelihood_contribution = torch.zeros((batch_size,))  # 0
         inputs = inputs.permute(1, 0, 2, 3)
         for i, channel in enumerate(inputs):
             channel, mixer_contrib = self.component_mixer.forward(channel.reshape(-1, self.width))
-            faux_put, output_likelihood = self.transform.forward(channel[:, :1], context=channel[:, 1:])
+            faux_put, output_likelihood = self.transform.forward(channel[:, :-1], context=channel[:, -1:])
             output[i] = faux_put.view(batch_size, h, new_w)
             # likelihood_contribution += (
             #         self.one_dim_flow.log_prob(channel[:, 1:], context=faux_put) + output_likelihood + mixer_contrib
             # ).view(batch_size, -1).mean(-1)
             likelihood_contribution += (
                     torch.exp(-output_likelihood) *
-                    (self.one_dim_flow.log_prob(channel[:, 1:], context=faux_put) + output_likelihood)
+                    (self.one_dim_flow.log_prob(channel[:, -1:], context=faux_put) + output_likelihood)
                     + mixer_contrib
             ).view(batch_size, -1).mean(-1)
         return output.permute(1, 0, 2, 3), likelihood_contribution
 
-    def inverse(self, inputs, context=None):
+    def forward(self, inputs, context=None):
+        batch_size, c, h, w = inputs.shape
+        n_w_to_take = w - w % self.width
+        baggage = inputs[..., n_w_to_take:]
+        output, likelihood = self._unpadded_forward(inputs[..., :n_w_to_take], context=context)
+        # output = torch.cat((output, baggage), -1)
+        return output, likelihood
+
+    def _unpadded_inverse(self, inputs, context=None):
 
         if inputs.dim() != 4:
             not_an_image_exception()
         batch_size, c, h, w = inputs.shape
-        new_w = int(w * self.width)
+        new_w = w + w // (self.width - 1)
         output = torch.zeros((c, batch_size, h, new_w))
         likelihood_contribution = 0
         inputs = inputs.permute(1, 0, 2, 3)
+        # TODO: this is only going to be single channel!
         for i, channel in enumerate(inputs):
-            channel = channel.reshape(-1, 1)
+            channel = channel.reshape(-1, self.width - 1)
             input_dropped = self.one_dim_flow.sample(1, context=channel).squeeze().view(-1, 1)
             input_mapped, output_likelihood = self.transform.inverse(channel, context=input_dropped)
             o_p, o_p_contrib = self.component_mixer.inverse(torch.cat([input_mapped, input_dropped], 1))
@@ -164,6 +189,16 @@ class NByOneConv(nflows.transforms.Transform):
             ).view(batch_size, -1).mean(-1)
             output[i] = o_p.view(batch_size, h, new_w)
         return output.permute(1, 0, 2, 3), likelihood_contribution
+
+    def inverse(self, inputs, context=None):
+        batch_size, c, h, w = inputs.shape
+        # TODO: you shouldn't be setting this by hand, but its the end of the day, so...
+        n_w_to_take = 1 # w - w % (self.width - 1)
+        # baggage = inputs[..., n_w_to_take:]
+        baggage = torch.zeros_like(inputs)[..., :n_w_to_take]
+        output, likelihood = self._unpadded_inverse(inputs, context=context)
+        output = torch.cat((output, baggage), -1)
+        return output, likelihood
 
 
 class MakeAnImage(nflows.transforms.Transform):
