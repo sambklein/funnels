@@ -64,10 +64,10 @@ pad = 2  # For mnist-like datasets
 flow_type = args.model
 n_funnels = 1
 
-conv_width = 5
+conv_width = 3
 # steps_per_level = 10
 steps_per_level = 5
-levels = 3
+levels = 2
 multi_scale = True
 actnorm = True
 
