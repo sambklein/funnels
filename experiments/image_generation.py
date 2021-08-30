@@ -39,7 +39,7 @@ def parse_args():
                         help='The dimension of the input data.')
 
     # Dataset and training parameters
-    parser.add_argument('--dataset', type=str, default='mnist',
+    parser.add_argument('--dataset', type=str, default='cifar-10',
                         help='The name of the plane dataset on which to train.')
 
     return parser.parse_args()
@@ -64,10 +64,10 @@ pad = 2  # For mnist-like datasets
 flow_type = args.model
 n_funnels = 1
 
-conv_width = 3
+conv_width = 7
 # steps_per_level = 10
 steps_per_level = 5
-levels = 2
+levels = 3
 multi_scale = True
 actnorm = True
 
@@ -90,10 +90,10 @@ if not isinstance(hidden_channels, list):
 if flow_type == 'glow':
     n_funnels = 0
     conv_width = 1
-elif flow_type == 'funnel':
-    levels = levels - n_funnels
+# elif flow_type == 'funnel':
+#     levels = levels - n_funnels
 
-use_resnet = False
+use_resnet = True
 num_res_blocks = 5  # If using resnet
 resnet_batchnorm = True
 dropout_prob = 0.
@@ -104,7 +104,7 @@ learning_rate = 5e-4
 cosine_annealing = True
 eta_min = 0.
 warmup_fraction = 0.
-num_steps = 50000
+num_steps = 20000
 temperatures = [0.5, 0.75, 1.]
 
 # Training logistics
@@ -287,7 +287,10 @@ def funnel_conv(num_channels, hidden_channels):
 
     step_transforms.extend([
         NByOneConv(num_channels, hidden_features=hidden_channels, width=conv_width, num_blocks=num_res_blocks,
-                   nstack=steps_per_level, tail_bound=spline_params['tail_bound'], num_bins=spline_params['num_bins']),
+                   nstack=steps_per_level,
+                   # tail_bound=spline_params['tail_bound'],
+                   tail_bound=4.,
+                   num_bins=spline_params['num_bins']),
     ])
 
     return transforms.CompositeTransform(step_transforms)
@@ -304,15 +307,21 @@ def create_transform(size_in, size_out):
 
     if flow_type == 'glow':
         for level, level_hidden_channels in zip(range(levels), hidden_channels):
+            image_size = c * h * w
             squeeze_transform = transforms.SqueezeTransform()
-            c, h, w = squeeze_transform.get_output_shape(c, h, w)
+            c_t, h_t, w_t = squeeze_transform.get_output_shape(c, h, w)
+            if c_t * h_t * w_t == image_size:
+                squeeze = 1
+                c, h, w = c_t, h_t, w_t
+            else:
+                print(f'No more squeezing after level {level + n_funnels}')
+                squeeze = 0
 
-            all_transforms += [transforms.CompositeTransform(
-                [squeeze_transform]
-                + [create_transform_step(c, level_hidden_channels, coupling_layer_type=coupling_layer_type) for _ in
-                   range(steps_per_level)]
-                + [transforms.OneByOneConvolution(c)]  # End each level with a linear transformation.
-            )]
+            layer_transform = [create_transform_step(c, level_hidden_channels) for _ in range(steps_per_level)] + [
+                transforms.OneByOneConvolution(c)]
+            if squeeze:
+                layer_transform = [squeeze_transform] + layer_transform
+            all_transforms += [transforms.CompositeTransform(layer_transform)]
 
         all_transforms.append(ReshapeTransform(
             input_shape=(c, h, w),
@@ -352,20 +361,43 @@ def create_transform(size_in, size_out):
     #         output_shape=(c * h * w,)
     #     ))
 
-    # Convolutions in 1 x 2
-    elif flow_type == 'funnel_conv':
-        hc = [c] + hidden_channels
-        for i in range(n_funnels):
-            all_transforms += [
-                funnel_conv(hc[i], hidden_channels=hc[i + 1]),
-                # RotateImageTransform(),
-                # funnel_conv(hc[i], hidden_channels=hc[i + 1]),
-                # RotateImageTransform(),
-            ]
+    # Convolutions in 1 x N
+    # elif flow_type == 'funnel_conv':
+    #     hc = [c] + hidden_channels
+    #     for i in range(n_funnels):
+    #         all_transforms += [
+    #             funnel_conv(hc[i], hidden_channels=hc[i + 1]),
+    #             # RotateImageTransform(),
+    #             # funnel_conv(hc[i], hidden_channels=hc[i + 1]),
+    #             # RotateImageTransform(),
+    #         ]
+    #
+    #     c, h, w = c_out, h_out, w_out
+    #     image_size = c * h * w
+    #     for level, level_hidden_channels in zip(range(levels), hidden_channels):
+    #         squeeze_transform = transforms.SqueezeTransform()
+    #         c_t, h_t, w_t = squeeze_transform.get_output_shape(c, h, w)
+    #         if c_t * h_t * w_t == image_size:
+    #             squeeze = 1
+    #             c, h, w = c_t, h_t, w_t
+    #         else:
+    #             print(f'No more squeezing after level {level + n_funnels}')
+    #             squeeze = 0
+    #
+    #         layer_transform = [create_transform_step(c, level_hidden_channels) for _ in range(steps_per_level)] + [
+    #             transforms.OneByOneConvolution(c)]
+    #         if squeeze:
+    #             layer_transform = [squeeze_transform] + layer_transform
+    #         all_transforms += [transforms.CompositeTransform(layer_transform)]
+    #
+    #     all_transforms.append(ReshapeTransform(
+    #         input_shape=(c, h, w),
+    #         output_shape=(c * h * w,)
+    #     ))
 
-        c, h, w = c_out, h_out, w_out
-        image_size = c * h * w
+    elif flow_type == 'funnel_conv':
         for level, level_hidden_channels in zip(range(levels), hidden_channels):
+            image_size = c * h * w
             squeeze_transform = transforms.SqueezeTransform()
             c_t, h_t, w_t = squeeze_transform.get_output_shape(c, h, w)
             if c_t * h_t * w_t == image_size:
@@ -381,15 +413,21 @@ def create_transform(size_in, size_out):
                 layer_transform = [squeeze_transform] + layer_transform
             all_transforms += [transforms.CompositeTransform(layer_transform)]
 
+            if level == 0:
+                all_transforms += [funnel_conv(c, hidden_channels=level_hidden_channels)]
+                w = int((w - w % conv_width) * (conv_width - 1) / conv_width)
+
         all_transforms.append(ReshapeTransform(
             input_shape=(c, h, w),
             output_shape=(c * h * w,)
         ))
 
     elif flow_type == 'funnel':
-        image_size = c * h * w
+        # image_size = c * h * w
         for level, level_hidden_channels in zip(range(levels), hidden_channels):
-            squeeze_transform = transforms.SqueezeTransform()
+            image_size = c * h * w
+            squeeze_factor = 4
+            squeeze_transform = transforms.SqueezeTransform(factor=squeeze_factor)
             c_t, h_t, w_t = squeeze_transform.get_output_shape(c, h, w)
             if c_t * h_t * w_t == image_size:
                 squeeze = 1
@@ -404,11 +442,13 @@ def create_transform(size_in, size_out):
             if squeeze:
                 layer_transform = [squeeze_transform] + layer_transform
 
+            # if level >= levels - n_funnels:
             if level < n_funnels:
                 layer_transform += [create_transform_step(c, level_hidden_channels, size_in=(1, h, w),
                                                           size_context=(c - 1, h, w), coupling_layer_type='sur')]
                 c -= 1
                 image_size -= h * w
+            print(c, h, w)
 
             all_transforms += [transforms.CompositeTransform(layer_transform)]
 
@@ -580,20 +620,21 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device):
             torch.save(flow.state_dict(), os.path.join(run_dir, 'flow_last.pt'))
             print('It: {}/{} saved optimizer_last.pt and flow_last.pt'.format(step, num_steps))
 
-        if step > 0 and step % intervals['reconstruct'] == 0:
-            with torch.no_grad():
-                random_batch_ = random_batch.to(device)
-                random_batch_rec, logabsdet = identity_transform(random_batch_)
-
-                max_abs_diff = torch.max(torch.abs(random_batch_rec - random_batch_))
-                max_logabsdet = torch.max(logabsdet)
-
-            summary_writer.add_scalar(tag='max_reconstr_abs_diff',
-                                      scalar_value=max_abs_diff.item(),
-                                      global_step=step)
-            summary_writer.add_scalar(tag='max_reconstr_logabsdet',
-                                      scalar_value=max_logabsdet.item(),
-                                      global_step=step)
+        # TODO: this is actually a useful measure, but breaks everything in it's current formulation
+        # if step > 0 and step % intervals['reconstruct'] == 0:
+        #     with torch.no_grad():
+        #         random_batch_ = random_batch.to(device)
+        #         random_batch_rec, logabsdet = identity_transform(random_batch_)
+        #
+        #         max_abs_diff = torch.max(torch.abs(random_batch_rec - random_batch_))
+        #         max_logabsdet = torch.max(logabsdet)
+        #
+        #     summary_writer.add_scalar(tag='max_reconstr_abs_diff',
+        #                               scalar_value=max_abs_diff.item(),
+        #                               global_step=step)
+        #     summary_writer.add_scalar(tag='max_reconstr_logabsdet',
+        #                               scalar_value=max_logabsdet.item(),
+        #                               global_step=step)
 
 
 def train_and_generate_images():
@@ -605,7 +646,8 @@ def train_and_generate_images():
         # for the squeezing operation to work how it should
         c_out, h_out, w_out = c, \
                               h, \
-                              int(np.floor(w * ((conv_width - 1) / conv_width) ** n_funnels))
+                              int((w - w % conv_width) * ((conv_width - 1) / conv_width) ** n_funnels)
+        # int(np.floor(w * ((conv_width - 1) / conv_width) ** n_funnels))
     elif flow_type == 'funnel_non_conv':
         c_out, h_out, w_out = 256, 1, 1
     elif flow_type == 'funnel':
