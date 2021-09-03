@@ -20,6 +20,9 @@ def get_bins(data, nbins=20):
 def get_mask(x, bound):
     return np.logical_and(x > bound[0], x < bound[1])
 
+def get_weights(data):
+    return np.ones_like(data) / len(data)
+
 
 def apply_bound(data, bound):
     mask = np.logical_and(get_mask(data[:, 0], bound), get_mask(data[:, 1], bound))

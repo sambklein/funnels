@@ -1,3 +1,7 @@
+import glob
+
+import numpy.lib.recfunctions as rfn
+
 from nflows.utils import get_num_parameters
 from nflows import transforms
 from nflows import flows
@@ -9,6 +13,7 @@ import matplotlib.pyplot as plt
 
 import time
 
+from surVAE.data.base import BasicData
 from surVAE.data.plane import load_plane_dataset
 from surVAE.models.flows import get_transform
 from surVAE.models.sur_flows import SurNSF
@@ -16,8 +21,8 @@ from surVAE.data.hyper_dim import HyperCheckerboardDataset
 
 import argparse
 
-from surVAE.utils.io import save_object
-from surVAE.utils.plotting import getCrossFeaturePlot, plot2Dhist, plot_likelihood
+from surVAE.utils.io import save_object, get_top_dir, on_cluster
+from surVAE.utils.plotting import getCrossFeaturePlot, plot2Dhist, plot_likelihood, get_bins, get_weights
 from surVAE.utils.torch_utils import tensor2numpy
 
 
@@ -25,7 +30,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
 
     # Saving
-    parser.add_argument('-d', '--outputdir', type=str, default='plane_images_local',
+    parser.add_argument('-d', '--outputdir', type=str, default='ttbar_local',
                         help='Choose the base output directory')
     parser.add_argument('-n', '--outputname', type=str, default='local',
                         help='Set the output name directory')
@@ -33,9 +38,7 @@ def parse_args():
                         help='Load a model?')
 
     # Model set up
-    parser.add_argument('--inp_dim', type=int, default=2,
-                        help='The dimension of the input data.')
-    parser.add_argument('--nodes', type=int, default=64,
+    parser.add_argument('--nodes', type=int, default=16,
                         help='The number of nodes in each layer used to learn the flow parameters.')
     parser.add_argument('--num_blocks', type=int, default=2,
                         help='The number of layers used to learn the flow placements.')
@@ -43,7 +46,7 @@ def parse_args():
                         help='The number of flow layers.')
     parser.add_argument('--tails', type=str, default='linear',
                         help='The tail function to apply.')
-    parser.add_argument('--tail_bound', type=float, default=4.,
+    parser.add_argument('--tail_bound', type=float, default=1.2,
                         help='The tail bound.')
     parser.add_argument('--num_bins', type=int, default=10,
                         help='The number of bins to use in the RQ-NSF.')
@@ -55,17 +58,11 @@ def parse_args():
                         help='Use RQ-NSF if true, else Real NVP.')
 
     # Dataset and training parameters
-    parser.add_argument('--dataset', type=str, default='diamond',
-                        help='The name of the plane dataset on which to train.')
-    parser.add_argument('--batch_size', type=int, default=100,
+    parser.add_argument('--batch_size', type=int, default=1000,
                         help='Whether to make the additional layers surVAE layers.')
-    parser.add_argument('--n_epochs', type=int, default=20,
+    parser.add_argument('--n_epochs', type=int, default=1,
                         help='Whether to make the additional layers surVAE layers.')
     parser.add_argument('--lr', type=float, default=0.001,
-                        help='Whether to make the additional layers surVAE layers.')
-    parser.add_argument('--ndata', type=int, default=int(1e5),
-                        help='Whether to make the additional layers surVAE layers.')
-    parser.add_argument('--n_val', type=int, default=int(1e3),
                         help='Whether to make the additional layers surVAE layers.')
     parser.add_argument('--n_test', type=int, default=int(1e4),
                         help='Whether to make the additional layers surVAE layers.')
@@ -78,22 +75,67 @@ def parse_args():
 
     return parser.parse_args()
 
+def read_ttbar_file(file):
+    with open(file, 'rb') as f:
+        array = np.load(f)
+    unstruct_array = rfn.structured_to_unstructured(array)
+    four_vector_mask = np.zeros(unstruct_array.shape[1], dtype='bool')
+    four_vector_mask[:25] = np.mod(np.arange(25) + 1, 5) != 0
+    four_vectors = unstruct_array[:, four_vector_mask]
+    tags = unstruct_array[:, ~four_vector_mask][:, :-2]
+    et_info = unstruct_array[:, -2:]
+    return four_vectors, tags, et_info
 
-def checkerboard_test():
+def read_ttbar():
+    if on_cluster():
+        files = glob.glob(f'{get_top_dir()}/surVAE/data/downloads/ttbar/*.npy')
+    else:
+        files = [f'{get_top_dir()}/surVAE/data/downloads/ttbar/events_merged.npy']
+    four_vectors = []
+    tags = []
+    et_info = []
+    for file in files:
+        fv, tg, et = read_ttbar_file(file)
+        four_vectors += [fv]
+        tags += [tg]
+        et_info += [et]
+    return np.concatenate(four_vectors), np.concatenate(tags), np.concatenate(et_info)
+
+
+def ttbar_experiment():
     # Parse args
     args = parse_args()
 
+    # Set up the dataset and training parameters
+    val_batch_size = 1000
+
+    four_vectors, tags, et_info = read_ttbar()
+
+    dataset = np.concatenate((four_vectors, et_info), 1)
+    n_data = dataset.shape[0]
+    train_split = 0.9
+    n_train = int(n_data * train_split)
+    train_data = BasicData(dataset[:n_train])
+    valid_set = BasicData(dataset[n_train:])
+    # As long as this isn't used for anything it is okay
+    test_set = valid_set
+    # Normalise the data
+    valid_set.normalize(facts=train_data.get_and_set_norm_facts(normalize=True))
+
+    training_data = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=True,
+                                                num_workers=0)
+    valid_data = torch.utils.data.DataLoader(valid_set, batch_size=val_batch_size, shuffle=True, num_workers=0)
+
     # Set up saving and change the name of some args
     svo = save_object(args.outputdir, args.outputname, args=args)
-    inp_dim = args.inp_dim
+    inp_dim = dataset.shape[1]
     out_dim = inp_dim - args.num_add * args.add_sur
     nstack = args.nstack + args.num_add * (1 - args.add_sur)
-
-    # TODO: needs to be a kwarg
     spline = args.splines
+    nodes = args.nodes if args.add_sur else int(1.45 * args.nodes)
 
     # Set up and define the model
-    transform_list = [get_transform(inp_dim, nodes=args.nodes,
+    transform_list = [get_transform(inp_dim, nodes=nodes,
                                     nstack=nstack,
                                     num_blocks=args.num_blocks,
                                     tail_bound=args.tail_bound,
@@ -129,13 +171,8 @@ def checkerboard_test():
     flow = flows.Flow(transform, base_dist).to(device)
     print(f'There are {get_num_parameters(flow)} params')
 
-    # Set up the dataset and training parameters
-    val_batch_size = 1000
-
-    testset = load_plane_dataset(args.dataset, args.n_test)
-
     optimizer = torch.optim.Adam(flow.parameters(), lr=args.lr)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.ndata / args.batch_size * args.n_epochs, 0)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, n_data / args.batch_size * args.n_epochs, 0)
 
     # Train the model
     train_save = []
@@ -145,12 +182,8 @@ def checkerboard_test():
         transform.load_state_dict(torch.load(svo.save_name('model', extension='')))
     else:
         for epoch in range(args.n_epochs):
+            flow.train()
             start_time = time.time()
-            trainset = load_plane_dataset(args.dataset, args.ndata)
-            training_data = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True,
-                                                        num_workers=0)
-            validset = load_plane_dataset(args.dataset, args.n_val)
-            valid_data = torch.utils.data.DataLoader(validset, batch_size=val_batch_size, shuffle=True, num_workers=0)
 
             # Training
             running_loss = []
@@ -170,17 +203,16 @@ def checkerboard_test():
                 if i % args.monitor_interval == 0:
                     losses = -flow.log_prob(data).mean()
                     running_loss += [losses.item()]
-                    s = '[{}, {}] {}'.format(epoch + 1, i + 1, running_loss[-1])
 
             # Update training loss trackers
             train_save += [np.mean(running_loss, 0)]
+            flow.eval()
 
             # Validation
-            val_loss = np.zeros((int(args.n_val / val_batch_size)))
+            mean_val_loss = 0
             for i, data in enumerate(valid_data):
-                val_loss[i] = -flow.log_prob(data.to(device)).mean().item()
-
-            val_save += [np.mean(val_loss, 0)]
+                mean_val_loss += -flow.log_prob(data.to(device)).mean().item()
+            val_save += [mean_val_loss / np.ceil(len(valid_set) / val_batch_size)]
 
             with open(svo.save_name('timing', extension='txt'), 'w') as f:
                 f.write('{}\n'.format(time.time() - start_time))
@@ -203,7 +235,7 @@ def checkerboard_test():
     # Plot the distribution of the encoding
     cpu = torch.device("cpu")
     with torch.no_grad():
-        test_data = testset.data.to(device)
+        test_data = test_set.data.to(device)
         if spline:
             test_data = test_data * args.tail_bound
         encoding = flow.transform_to_noise(test_data).to(cpu)
@@ -213,8 +245,21 @@ def checkerboard_test():
     # Plot a selection of generated samples
     with torch.no_grad():
         samples = tensor2numpy(flow.sample(args.n_test))
-    fig, axs = plt.subplots(1, 1, figsize=(8, 8))
-    plot2Dhist(samples, axs)
+    data_dim = test_set.data.shape[1]
+    ncols = int(np.ceil(data_dim / 3))
+    nrows = int(np.ceil(data_dim / ncols))
+    fig, axs_ = plt.subplots(nrows, ncols, figsize=(5 * ncols + 2, 5 * nrows + 2))
+    axs = fig.axes
+    for i in range(data_dim):
+        bins = get_bins(test_set[:, i])
+        og_data = tensor2numpy(test_set[:, i])
+        axs[i].hist(og_data, label='original', alpha=0.5, density=True, bins=bins,
+                    weights=get_weights(og_data))
+        # Plot samples drawn from the model
+        axs[i].hist(samples[:, i], label='samples', alpha=0.5, density=True, bins=bins,
+                    weights=get_weights(samples[:, i]))
+        # axs[i].set_title(test_loader.feature_names[i])
+        axs[i].legend()
     fig.savefig(svo.save_name('samples'))
 
     # Plot the model density
@@ -249,4 +294,4 @@ def checkerboard_test():
 
 
 if __name__ == '__main__':
-    checkerboard_test()
+    ttbar_experiment()

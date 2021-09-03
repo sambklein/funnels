@@ -1,6 +1,7 @@
 import os
 import pathlib
 import json
+import time
 
 
 def on_cluster():
@@ -13,6 +14,23 @@ def on_cluster():
         return True
     else:
         return False
+
+def get_timestamp():
+    formatted_time = time.strftime('%d-%b-%y||%H:%M:%S')
+    return formatted_time
+
+def get_log_root():
+    directory = f'{get_top_dir()}/images/logs'
+    os.makedirs(directory, exist_ok=True)
+    return directory
+
+def get_checkpoint_root():
+    directory = f'{get_top_dir()}/images/checkpoints'
+    os.makedirs(directory, exist_ok=True)
+    return directory
+
+def get_data_root():
+    return f'{get_top_dir()}/surVAE/data/downloads'
 
 
 def get_top_dir():
@@ -66,3 +84,7 @@ class save_object():
         dict = json.loads(json_dict)
         self.exp_name = dict['outputname']
         return dict
+
+
+# def make_splits(data):
+

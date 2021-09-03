@@ -6,7 +6,8 @@ import torch.nn as nn
 from nflows.transforms import splines
 from nflows.transforms.coupling import CouplingTransform
 
-from surVAE.models.flows import get_transform
+from surVAE.models.GLOW import create_flow
+from surVAE.models.flows import get_transform, coupling_spline
 from surVAE.models.nn.MLPs import dense_net
 import numpy as np
 
@@ -39,33 +40,26 @@ class get_net(nn.Module):
 
 class SurNSF(nflows.transforms.Transform):
 
-    def __init__(self, features, hidden_features, num_blocks=2, num_bins=10, tail_bound=4., tails='linear', **kwargs):
+    def __init__(self, features, hidden_features, num_blocks=2, num_bins=10, tail_bound=4., tails='linear', spline=True,
+                 **kwargs):
         super(SurNSF, self).__init__()
 
         self.features = features
-
         inp_dim = 1
         nstack = 2
-
-        transform_list = []
-        for i in range(nstack):
-            transform_list += [
-                transforms.MaskedPiecewiseRationalQuadraticAutoregressiveTransform(inp_dim, hidden_features,
-                                                                                   num_blocks=num_blocks,
-                                                                                   tail_bound=tail_bound,
-                                                                                   num_bins=num_bins,
-                                                                                   tails=tails,
-                                                                                   context_features=features - 1)]
-
-            transform_list += [transforms.ReversePermutation(inp_dim)]
-
-        flow_transform = transforms.CompositeTransform(transform_list[:-1])
+        self.flow_transform = get_transform(inp_dim=inp_dim,
+                                            nodes=hidden_features,
+                                            num_blocks=num_blocks,
+                                            tails=tails,
+                                            num_bins=num_bins,
+                                            tail_bound=tail_bound,
+                                            nstack=nstack,
+                                            context_features=features - 1,
+                                            spline=spline)
         base_dist = nflows.distributions.StandardNormal([inp_dim])
-        # flow_transform = get_transform(inp_dim=1, context_features=features - 1)
-        # base_dist = nflows.distributions.StandardNormal([1])
-        self.one_dim_flow = flows.Flow(flow_transform, base_dist)
+        self.one_dim_flow = flows.Flow(self.flow_transform, base_dist)
 
-        self.transform = get_transform(inp_dim=features - 1, context_features=1, tails='linear')
+        self.transform = get_transform(inp_dim=features - 1, context_features=1, tails='linear', spline=spline)
 
     def forward(self, inputs, context=None):
         input_dropped = inputs[:, 0].view(-1, 1)
@@ -121,11 +115,17 @@ class NByOneConv(nflows.transforms.Transform):
             self.get_one_dim_flow(nstack, hidden_features, num_blocks, tail_bound, num_bins, tails, width,
                                   spline=spline) for _ in range(num_channels)]
 
+        def maker(input_dim, output_dim):
+            return dense_net(input_dim, output_dim, layers=[hidden_features] * num_blocks)
+
+        mx = [0] + [1] * (self.width - 1)
+        self.transform = [coupling_spline(width, maker, tails='linear', num_bins=num_bins, mask=mx,
+                                          tail_bound=tail_bound, nstack=nstack) for _ in range(num_channels)]
         # self.transform = [get_transform(inp_dim=width, context_features=None, tails='linear', nodes=hidden_features,
         #                                 tail_bound=tail_bound, nstack=nstack) for _ in range(num_channels)]
-        self.transform = [get_transform(inp_dim=width - 1, context_features=1, tails='linear', nodes=hidden_features,
-                                        tail_bound=tail_bound, nstack=nstack, spline=1) for _ in
-                          range(num_channels)]
+        # self.transform = [get_transform(inp_dim=width - 1, context_features=1, tails='linear', nodes=hidden_features,
+        #                                 tail_bound=tail_bound, nstack=nstack, spline=1) for _ in
+        #                   range(num_channels)]
 
     def get_one_dim_flow(self, nstack, hidden_features, num_blocks, tail_bound, num_bins, tails, width, spline=True):
         inp_dim = 1
@@ -154,6 +154,10 @@ class NByOneConv(nflows.transforms.Transform):
         #                                                     tail_bound * torch.ones(inp_dim))
         return flows.Flow(flow_transform, base_dist)
 
+    def _get_context(self, z):
+        return z
+        # return torch.cat((z, z, z), 1)
+
     def _unpadded_forward(self, inputs, context=None):
         if inputs.dim() != 4:
             not_an_image_exception()
@@ -169,16 +173,20 @@ class NByOneConv(nflows.transforms.Transform):
             channel, mixer_contrib = self.component_mixer[i].forward(channel.reshape(-1, self.width))
             inputs_to_drop = channel[:, self.ind_to_drop].view(-1, 1)
             inputs_to_map = channel[:, self.ind_mask]
-            faux_put, output_likelihood = self.transform[i].forward(inputs_to_map, context=inputs_to_drop)
-            output[i] = faux_put.view(batch_size, h, new_w)
+            # faux_put, output_likelihood = self.transform[i].forward(inputs_to_map, context=inputs_to_drop)
+            # output[i] = faux_put.view(batch_size, h, new_w)
+            faux_put, output_likelihood = self.transform[i].forward(channel)
+            faux_put = faux_put[:, 1:]
+            output[i] = faux_put.reshape(batch_size, h, new_w)
             # n_in = torch.cat((inputs_to_drop, inputs_to_map), 1)
             # TODO: is this the correct likelihood?
             # faux_put, output_likelihood = self.transform[i].forward(n_in)
             # faux_put = faux_put[:, 1:]
             output[i] = faux_put.reshape(batch_size, h, new_w)
+            one_d_context = faux_put
             likelihood_contribution += (
                     torch.exp(-output_likelihood) *
-                    (self.one_dim_flow[i].log_prob(inputs_to_drop, context=faux_put) + output_likelihood)
+                    (self.one_dim_flow[i].log_prob(inputs_to_drop, context=one_d_context) + output_likelihood)
                     + mixer_contrib
             ).view(batch_size, -1).mean(-1)
         return output.permute(1, 0, 2, 3), likelihood_contribution
@@ -204,18 +212,22 @@ class NByOneConv(nflows.transforms.Transform):
         for i, channel in enumerate(inputs):
             channel = channel.reshape(-1, self.width - 1)
             output_temp = torch.zeros((channel.shape[0], channel.shape[1] + 1))
-            input_dropped = self.one_dim_flow[i].sample(1, context=channel).squeeze().view(-1, 1)
-            input_mapped, output_likelihood = self.transform[i].inverse(channel, context=input_dropped)
-            # un_mixed_output = torch.cat([input_mapped, input_dropped], 1)
-            output_temp[:, self.ind_to_drop] = input_dropped.view(-1)
-            output_temp[:, self.ind_mask] = input_mapped
-            # input_mapped, output_likelihood = self.transform[i].inverse(torch.cat((input_dropped, channel), 1))
-            # output_temp[:, self.ind_to_drop] = input_mapped[:, 0].view(-1)
-            # input_mapped = input_mapped[:, 1:]
+            one_d_context = channel
+            input_dropped = self.one_dim_flow[i].sample(1, context=one_d_context).squeeze().view(-1, 1)
+
+            # input_mapped, output_likelihood = self.transform[i].inverse(channel, context=input_dropped)
+            # output_temp[:, self.ind_to_drop] = input_dropped.view(-1)
             # output_temp[:, self.ind_mask] = input_mapped
+            # un_mixed_output = torch.cat([input_mapped, input_dropped], 1)
+            input_mapped, output_likelihood = self.transform[i].inverse(torch.cat((input_dropped, channel), 1))
+            output_temp[:, self.ind_to_drop] = input_mapped[:, 0].view(-1)
+            input_mapped = input_mapped[:, 1:]
+            output_temp[:, self.ind_mask] = input_mapped
+
             o_p, o_p_contrib = self.component_mixer[i].inverse(output_temp)
+            one_d_context = input_mapped
             likelihood_contribution += (
-                    self.one_dim_flow[i].log_prob(input_dropped, context=input_mapped) + output_likelihood + o_p_contrib
+                    self.one_dim_flow[i].log_prob(input_dropped, context=one_d_context) + output_likelihood + o_p_contrib
             ).view(batch_size, -1).mean(-1)
             output[i] = o_p.view(batch_size, h, new_w)
         return output.permute(1, 0, 2, 3), likelihood_contribution
@@ -363,7 +375,8 @@ class surRqNSF(transforms.PiecewiseRationalQuadraticCouplingTransform):
                  img_shape=None,
                  min_bin_width=splines.rational_quadratic.DEFAULT_MIN_BIN_WIDTH,
                  min_bin_height=splines.rational_quadratic.DEFAULT_MIN_BIN_HEIGHT,
-                 min_derivative=splines.rational_quadratic.DEFAULT_MIN_DERIVATIVE, ):
+                 min_derivative=splines.rational_quadratic.DEFAULT_MIN_DERIVATIVE,
+                 generator_function=make_generator):
         super(surRqNSF, self).__init__(mask=mask,
                                        transform_net_create_fn=transform_net_create_fn,
                                        tails=tails,
@@ -382,7 +395,8 @@ class surRqNSF(transforms.PiecewiseRationalQuadraticCouplingTransform):
             torch.cat((torch.arange(self.features)[self.drop_mask], torch.tensor([feature_to_drop]))))
 
         # A flow that can generate one dropped index of the input data given the other data entries
-        self.generator = make_generator(dropped_entries_shape, context_shape)
+        # self.generator = generator_function(dropped_entries_shape, context_shape)
+        self.generator = create_flow(dropped_entries_shape, context_channels=context_shape[0])
 
     def forward(self, inputs, context=None):
         faux_output, log_contr = super().forward(inputs, context=context)
@@ -392,7 +406,7 @@ class surRqNSF(transforms.PiecewiseRationalQuadraticCouplingTransform):
         # return output, torch.exp(-likelihood) * (log_contr + likelihood)
 
     def inverse(self, inputs, context=None):
-        input_dropped = self.generator.sample(1, context=inputs)
+        input_dropped = self.generator.sample(1, context=inputs).squeeze().unsqueeze(1)
         likelihood = self.generator.log_prob(input_dropped, context=inputs)
         inputs = torch.cat((inputs, input_dropped), 1)[:, self.sorted_indices, ...]
         output, log_contr = super().inverse(inputs, context=context)

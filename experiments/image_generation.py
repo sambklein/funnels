@@ -5,6 +5,7 @@ from nflows import distributions, flows, transforms
 from nflows.utils import create_mid_split_binary_mask
 import torch.nn as nn
 from nflows.nn.nets import ConvResidualNet
+from nflows.utils import get_num_parameters
 
 from tensorboardX import SummaryWriter
 from torch.utils.data import DataLoader
@@ -35,7 +36,7 @@ def parse_args():
                         help='Load a model?')
 
     # Model set up
-    parser.add_argument('--model', type=str, default='funnel_conv',
+    parser.add_argument('--model', type=str, default='glow',
                         help='The dimension of the input data.')
 
     # Dataset and training parameters
@@ -63,8 +64,9 @@ pad = 2  # For mnist-like datasets
 # Model architecture
 flow_type = args.model
 n_funnels = 1
+squeeze_num = 1
 
-conv_width = 7
+conv_width = 4
 # steps_per_level = 10
 steps_per_level = 5
 levels = 3
@@ -94,12 +96,12 @@ if flow_type == 'glow':
 #     levels = levels - n_funnels
 
 use_resnet = True
-num_res_blocks = 5  # If using resnet
+num_res_blocks = 3  # If using resnet
 resnet_batchnorm = True
 dropout_prob = 0.
 
 # Optimization
-batch_size = 256
+batch_size = 32
 learning_rate = 5e-4
 cosine_annealing = True
 eta_min = 0.
@@ -156,7 +158,7 @@ class ConvNet(nn.Module):
 #                           hidden_channels, actnorm, coupling_layer_type, spline_params,
 #                           use_resnet, num_res_blocks, resnet_batchnorm, dropout_prob):
 def create_transform_step(num_channels, hidden_channels, coupling_layer_type='rational_quadratic_spline', size_in=None,
-                          size_context=None):
+                          size_context=None, context_channels=None):
     if use_resnet:
         def create_convnet(in_channels, out_channels):
             net = ConvResidualNet(in_channels=in_channels,
@@ -164,7 +166,8 @@ def create_transform_step(num_channels, hidden_channels, coupling_layer_type='ra
                                   hidden_channels=hidden_channels,
                                   num_blocks=num_res_blocks,
                                   use_batch_norm=resnet_batchnorm,
-                                  dropout_probability=dropout_prob)
+                                  dropout_probability=dropout_prob,
+                                  context_channels=context_channels)
             return net
     else:
         if dropout_prob != 0.:
@@ -296,7 +299,35 @@ def funnel_conv(num_channels, hidden_channels):
     return transforms.CompositeTransform(step_transforms)
 
 
-def create_transform(size_in, size_out):
+def add_glow(size_in, context_channels=None):
+    c, h, w = size_in
+    all_transforms = []
+    for level, level_hidden_channels in zip(range(levels), hidden_channels):
+        image_size = c * h * w
+        squeeze_transform = transforms.SqueezeTransform()
+        c_t, h_t, w_t = squeeze_transform.get_output_shape(c, h, w)
+        if c_t * h_t * w_t == image_size:
+            squeeze = 1
+            c, h, w = c_t, h_t, w_t
+        else:
+            print(f'No more squeezing after level {level + n_funnels}')
+            squeeze = 0
+
+        layer_transform = [create_transform_step(c, level_hidden_channels, context_channels=context_channels) for _ in
+                           range(steps_per_level)] + [transforms.OneByOneConvolution(c)]
+        if squeeze:
+            layer_transform = [squeeze_transform] + layer_transform
+        all_transforms += [transforms.CompositeTransform(layer_transform)]
+
+    all_transforms.append(ReshapeTransform(
+        input_shape=(c, h, w),
+        output_shape=(c * h * w,)
+    ))
+
+    return all_transforms
+
+
+def create_transform(flow_type, size_in, size_out):
     # if not isinstance(hidden_channels, list):
     #     hidden_channels = [hidden_channels] * levels
 
@@ -306,27 +337,7 @@ def create_transform(size_in, size_out):
     all_transforms = []
 
     if flow_type == 'glow':
-        for level, level_hidden_channels in zip(range(levels), hidden_channels):
-            image_size = c * h * w
-            squeeze_transform = transforms.SqueezeTransform()
-            c_t, h_t, w_t = squeeze_transform.get_output_shape(c, h, w)
-            if c_t * h_t * w_t == image_size:
-                squeeze = 1
-                c, h, w = c_t, h_t, w_t
-            else:
-                print(f'No more squeezing after level {level + n_funnels}')
-                squeeze = 0
-
-            layer_transform = [create_transform_step(c, level_hidden_channels) for _ in range(steps_per_level)] + [
-                transforms.OneByOneConvolution(c)]
-            if squeeze:
-                layer_transform = [squeeze_transform] + layer_transform
-            all_transforms += [transforms.CompositeTransform(layer_transform)]
-
-        all_transforms.append(ReshapeTransform(
-            input_shape=(c, h, w),
-            output_shape=(c * h * w,)
-        ))
+        all_transforms = add_glow(size_in)
 
     # elif flow_type == 'funnel_non_conv':
     #     for level, level_hidden_channels in zip(range(levels), hidden_channels):
@@ -398,7 +409,8 @@ def create_transform(size_in, size_out):
     elif flow_type == 'funnel_conv':
         for level, level_hidden_channels in zip(range(levels), hidden_channels):
             image_size = c * h * w
-            squeeze_transform = transforms.SqueezeTransform()
+            squeeze_factor = 2
+            squeeze_transform = transforms.SqueezeTransform(factor=squeeze_factor)
             c_t, h_t, w_t = squeeze_transform.get_output_shape(c, h, w)
             if c_t * h_t * w_t == image_size:
                 squeeze = 1
@@ -426,10 +438,10 @@ def create_transform(size_in, size_out):
         # image_size = c * h * w
         for level, level_hidden_channels in zip(range(levels), hidden_channels):
             image_size = c * h * w
-            squeeze_factor = 4
+            squeeze_factor = 2
             squeeze_transform = transforms.SqueezeTransform(factor=squeeze_factor)
             c_t, h_t, w_t = squeeze_transform.get_output_shape(c, h, w)
-            if c_t * h_t * w_t == image_size:
+            if (c_t * h_t * w_t == image_size) and (level < 1):
                 squeeze = 1
                 c, h, w = c_t, h_t, w_t
             else:
@@ -474,9 +486,9 @@ def create_transform(size_in, size_out):
     return transforms.CompositeTransform([preprocess_transform, mct]), (c, h, w)
 
 
-def create_flow(size_in, size_out, flow_checkpoint=None):
+def create_flow(size_in, size_out, flow_checkpoint=None, flow_type=flow_type):
     c_out, h_out, w_out = size_out
-    transform, (c_out, h_out, w_out) = create_transform(size_in, size_out)
+    transform, (c_out, h_out, w_out) = create_transform(flow_type, size_in, size_out)
     distribution = distributions.StandardNormal((c_out * h_out * w_out,))
 
     flow = flows.Flow(transform, distribution)
@@ -597,6 +609,12 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device):
             fig.savefig(svo.save_name(f'samples_{step}.png'))
             plt.close(fig)
 
+            # fig, axs = plt.subplots(1, 1, figsize=(4, 4))
+            # autils.imshow(make_grid((batch[:64] / 2 ** num_bits - 0.5) * 2, nrow=8), axs)
+            # fig.savefig(svo.save_name(f'training_data{step}.png'))
+            # fig.tight_layout()
+            # plt.close(fig)
+
         if step > 0 and step % intervals['eval'] == 0 and (val_loader is not None):
             def log_prob_fn(batch):
                 return flow.log_prob(batch.to(device))
@@ -661,6 +679,7 @@ def train_and_generate_images():
         torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
     flow = create_flow((c, h, w), (c_out, h_out, w_out))
+    print(f'There are {get_num_parameters(flow)} params')
     # Can't set default back without messing with the nflows package directly, the problem is the zeros likelihoods
     # torch.set_default_tensor_type('torch.FloatTensor')
 
