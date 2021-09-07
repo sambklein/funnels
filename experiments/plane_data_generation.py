@@ -49,17 +49,17 @@ def parse_args():
                         help='The number of bins to use in the RQ-NSF.')
     parser.add_argument('--num_add', type=int, default=1,
                         help='The number of additional layers to add.')
-    parser.add_argument('--add_sur', type=int, default=0,
+    parser.add_argument('--add_sur', type=int, default=1,
                         help='Whether to make the additional layers surVAE layers.')
     parser.add_argument('--splines', type=int, default=1,
                         help='Use RQ-NSF if true, else Real NVP.')
 
     # Dataset and training parameters
-    parser.add_argument('--dataset', type=str, default='diamond',
+    parser.add_argument('--dataset', type=str, default='checkerboard',
                         help='The name of the plane dataset on which to train.')
     parser.add_argument('--batch_size', type=int, default=100,
                         help='Whether to make the additional layers surVAE layers.')
-    parser.add_argument('--n_epochs', type=int, default=20,
+    parser.add_argument('--n_epochs', type=int, default=10,
                         help='Whether to make the additional layers surVAE layers.')
     parser.add_argument('--lr', type=float, default=0.001,
                         help='Whether to make the additional layers surVAE layers.')

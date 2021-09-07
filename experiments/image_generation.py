@@ -36,7 +36,7 @@ def parse_args():
                         help='Load a model?')
 
     # Model set up
-    parser.add_argument('--model', type=str, default='glow',
+    parser.add_argument('--model', type=str, default='funnel_conv',
                         help='The dimension of the input data.')
 
     # Dataset and training parameters
@@ -66,7 +66,7 @@ flow_type = args.model
 n_funnels = 1
 squeeze_num = 1
 
-conv_width = 4
+conv_width = 3
 # steps_per_level = 10
 steps_per_level = 5
 levels = 3

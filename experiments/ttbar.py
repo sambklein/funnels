@@ -52,7 +52,7 @@ def parse_args():
                         help='The number of bins to use in the RQ-NSF.')
     parser.add_argument('--num_add', type=int, default=1,
                         help='The number of additional layers to add.')
-    parser.add_argument('--add_sur', type=int, default=0,
+    parser.add_argument('--add_sur', type=int, default=1,
                         help='Whether to make the additional layers surVAE layers.')
     parser.add_argument('--splines', type=int, default=1,
                         help='Use RQ-NSF if true, else Real NVP.')

@@ -209,14 +209,14 @@ def checkerboard_test():
     cpu = torch.device("cpu")
 
     def get_samples():
-        # uniform_sample = torch.distributions.uniform.Uniform(torch.zeros(inp_dim) - 4.,
-        #                                                      torch.ones(inp_dim) * 4.,
-        #                                                      validate_args=None).sample([test_bs])
-        uniform_sample = torch.distributions.multivariate_normal.MultivariateNormal(
-            torch.zeros(inp_dim),
-            torch.eye(inp_dim),
-            validate_args=None
-        ).sample([test_bs])
+        uniform_sample = torch.distributions.uniform.Uniform(torch.zeros(inp_dim) - 4.,
+                                                             torch.ones(inp_dim) * 4.,
+                                                             validate_args=None).sample([test_bs])
+        # uniform_sample = torch.distributions.multivariate_normal.MultivariateNormal(
+        #     torch.zeros(inp_dim),
+        #     torch.eye(inp_dim),
+        #     validate_args=None
+        # ).sample([test_bs])
         inlier_sample = HyperCheckerboardDataset(test_bs, inp_dim).data
         return uniform_sample.to(device), inlier_sample.to(device)
 

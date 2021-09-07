@@ -193,6 +193,8 @@ def create_transform(size_in, context_channels=None, num_bits=8, preprocessing='
 
 
 def create_flow(size_in, context_channels=None, flow_checkpoint=None):
+    if isinstance(context_channels, list):
+        context_channels = context_channels[0]
     transform, (c_out, h_out, w_out) = create_transform(size_in, context_channels=context_channels)
     distribution = distributions.StandardNormal((c_out * h_out * w_out,))
 

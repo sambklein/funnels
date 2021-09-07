@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import os
 
-from nflows.utils import get_num_parameters
+from nflows.utils import get_num_parameters, create_alternating_binary_mask
 from tensorboardX import SummaryWriter
 from time import sleep
 from torch import optim
@@ -20,6 +20,7 @@ import surVAE.utils as utils
 
 from nflows import distributions, flows, transforms
 
+from surVAE.models import sur_flows
 from surVAE.utils.io import get_timestamp, on_cluster, get_log_root, get_checkpoint_root
 
 parser = argparse.ArgumentParser()
@@ -31,7 +32,7 @@ parser.add_argument('-n', '--outputname', type=str, default='local',
                     help='Set the output name directory')
 
 # data
-parser.add_argument('--dataset_name', type=str, default='miniboone',
+parser.add_argument('--dataset_name', type=str, default='gas',
                     choices=['power', 'gas', 'hepmass', 'miniboone', 'bsds300'],
                     help='Name of dataset to use.')
 parser.add_argument('--train_batch_size', type=int, default=64,
@@ -55,7 +56,7 @@ parser.add_argument('--grad_norm_clip_value', type=float, default=5.,
                     help='Value by which to clip norm of gradients.')
 
 # flow details
-parser.add_argument('--base_transform_type', type=str, default='rq-autoregressive',
+parser.add_argument('--base_transform_type', type=str, default='affine-coupling',
                     choices=['affine-coupling', 'quadratic-coupling', 'rq-coupling',
                              'affine-autoregressive', 'quadratic-autoregressive',
                              'rq-autoregressive'],
@@ -82,6 +83,8 @@ parser.add_argument('--apply_unconditional_transform', type=int, default=1,
                     choices=[0, 1],
                     help='Whether to unconditionally transform \'identity\' '
                          'features in coupling layer.')
+parser.add_argument('--funnel', type=float, default=1,
+                    help='Whether to add a single flow layer or not.')
 
 # logging and checkpoints
 parser.add_argument('--monitor_interval', type=int, default=250,
@@ -136,7 +139,7 @@ test_loader = data.DataLoader(
 features = train_dataset.dim
 
 
-def create_linear_transform():
+def create_linear_transform(features):
     if args.linear_transform_type == 'permutation':
         return transforms.RandomPermutation(features=features)
     elif args.linear_transform_type == 'lu':
@@ -153,11 +156,17 @@ def create_linear_transform():
         raise ValueError
 
 
-def create_base_transform(i):
+def create_base_transform(i, funnel=True):
+    funnel_kwargs = {
+        'dropped_entries_shape': [1],
+        'context_shape': [features - 1],
+        'generator_function': sur_flows.make_generator,
+    }
+
     if args.base_transform_type == 'affine-coupling':
-        return transforms.AffineCouplingTransform(
-            mask=utils.create_alternating_binary_mask(features, even=(i % 2 == 0)),
-            transform_net_create_fn=lambda in_features, out_features: nn_.ResidualNet(
+        afct_kwargs = {
+            'mask': create_alternating_binary_mask(features, even=(i % 2 == 0)),
+            'transform_net_create_fn': lambda in_features, out_features: nn_.nets.ResidualNet(
                 in_features=in_features,
                 out_features=out_features,
                 hidden_features=args.hidden_features,
@@ -167,11 +176,20 @@ def create_base_transform(i):
                 dropout_probability=args.dropout_probability,
                 use_batch_norm=args.use_batch_norm
             )
-        )
+        }
+        if funnel:
+            model = sur_flows.surAffineCoupling
+            afct_kwargs = {
+                **funnel_kwargs,
+                **afct_kwargs
+            }
+        else:
+            model = transforms.AffineCouplingTransform
+        return model(**afct_kwargs)
     elif args.base_transform_type == 'quadratic-coupling':
         return transforms.PiecewiseQuadraticCouplingTransform(
-            mask=utils.create_alternating_binary_mask(features, even=(i % 2 == 0)),
-            transform_net_create_fn=lambda in_features, out_features: nn_.ResidualNet(
+            mask=create_alternating_binary_mask(features, even=(i % 2 == 0)),
+            transform_net_create_fn=lambda in_features, out_features: nn_.nets.ResidualNet(
                 in_features=in_features,
                 out_features=out_features,
                 hidden_features=args.hidden_features,
@@ -187,9 +205,9 @@ def create_base_transform(i):
             apply_unconditional_transform=args.apply_unconditional_transform
         )
     elif args.base_transform_type == 'rq-coupling':
-        return transforms.PiecewiseRationalQuadraticCouplingTransform(
-            mask=utils.create_alternating_binary_mask(features, even=(i % 2 == 0)),
-            transform_net_create_fn=lambda in_features, out_features: nn_.ResidualNet(
+        rq_nsf_kwargs = {
+            'mask': create_alternating_binary_mask(features, even=(i % 2 == 0)),
+            'transform_net_create_fn': lambda in_features, out_features: nn_.nets.ResidualNet(
                 in_features=in_features,
                 out_features=out_features,
                 hidden_features=args.hidden_features,
@@ -199,11 +217,20 @@ def create_base_transform(i):
                 dropout_probability=args.dropout_probability,
                 use_batch_norm=args.use_batch_norm
             ),
-            num_bins=args.num_bins,
-            tails='linear',
-            tail_bound=args.tail_bound,
-            apply_unconditional_transform=args.apply_unconditional_transform
-        )
+            'num_bins': args.num_bins,
+            'tails': 'linear',
+            'tail_bound': args.tail_bound,
+            'apply_unconditional_transform': args.apply_unconditional_transform
+        }
+        if funnel:
+            model = sur_flows.surRqNSF
+            rq_nsf_kwargs = {
+                **funnel_kwargs,
+                **rq_nsf_kwargs
+            }
+        else:
+            model = transforms.PiecewiseRationalQuadraticCouplingTransform
+        return model(**rq_nsf_kwargs)
     elif args.base_transform_type == 'affine-autoregressive':
         return transforms.MaskedAffineAutoregressiveTransform(
             features=features,
@@ -253,24 +280,26 @@ def create_base_transform(i):
 def create_transform():
     transform = transforms.CompositeTransform([
                                                   transforms.CompositeTransform([
-                                                      create_linear_transform(),
-                                                      create_base_transform(i)
+                                                      create_linear_transform(features),
+                                                      create_base_transform(i,
+                                                                            funnel=(i == args.num_flow_steps - 1)
+                                                                                   * args.funnel)
                                                   ]) for i in range(args.num_flow_steps)
                                               ] + [
-                                                  create_linear_transform()
+                                                  create_linear_transform(int(features - args.funnel))
                                               ])
     return transform
 
 
 # create model
-distribution = distributions.StandardNormal((features,))
+distribution = distributions.StandardNormal((int(features - args.funnel),))
 transform = create_transform()
 flow = flows.Flow(transform, distribution).to(device)
 
 n_params = get_num_parameters(flow)
 print('There are {} trainable parameters in this model.'.format(n_params))
 
-# create optimizer
+# create optimizer 
 optimizer = optim.Adam(flow.parameters(), lr=args.learning_rate)
 if args.anneal_learning_rate:
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, args.num_training_steps, 0)
