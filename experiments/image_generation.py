@@ -30,17 +30,16 @@ def parse_args():
     # Saving
     parser.add_argument('-d', '--outputdir', type=str, default='plane_images_local',
                         help='Choose the base output directory')
-    parser.add_argument('-n', '--outputname', type=str, default='local',
-                        help='Set the output name directory')
-    parser.add_argument('--load', type=int, default=0,
-                        help='Load a model?')
+    parser.add_argument('-n', '--outputname', type=str, default='local', help='Set the output name directory')
+    parser.add_argument('--load', type=int, default=0, help='Load a model?')
+    parser.add_argument('--train_flow', type=int, default=0, help='Train the flow?')
 
     # Model set up
-    parser.add_argument('--model', type=str, default='funnel_conv',
+    parser.add_argument('--model', type=str, default='funnel',
                         help='The dimension of the input data.')
 
     # Dataset and training parameters
-    parser.add_argument('--dataset', type=str, default='cifar-10',
+    parser.add_argument('--dataset', type=str, default='mnist',
                         help='The name of the plane dataset on which to train.')
 
     return parser.parse_args()
@@ -63,10 +62,10 @@ pad = 2  # For mnist-like datasets
 
 # Model architecture
 flow_type = args.model
-n_funnels = 1
+n_funnels = 2
 squeeze_num = 1
 
-conv_width = 3
+conv_width = 7
 # steps_per_level = 10
 steps_per_level = 5
 levels = 3
@@ -76,7 +75,7 @@ actnorm = True
 # Coupling transform
 coupling_layer_type = 'rational_quadratic_spline'
 spline_params = {
-    'num_bins': 10,
+    'num_bins': 5,
     'tail_bound': 1.,
     'min_bin_width': 1e-3,
     'min_bin_height': 1e-3,
@@ -85,7 +84,7 @@ spline_params = {
 }
 
 # Coupling transform net
-hidden_channels = 128
+hidden_channels = 64
 if not isinstance(hidden_channels, list):
     hidden_channels = [hidden_channels] * levels
 
@@ -318,6 +317,7 @@ def add_glow(size_in, context_channels=None):
         if squeeze:
             layer_transform = [squeeze_transform] + layer_transform
         all_transforms += [transforms.CompositeTransform(layer_transform)]
+        print(c, h, w)
 
     all_transforms.append(ReshapeTransform(
         input_shape=(c, h, w),
@@ -339,73 +339,6 @@ def create_transform(flow_type, size_in, size_out):
     if flow_type == 'glow':
         all_transforms = add_glow(size_in)
 
-    # elif flow_type == 'funnel_non_conv':
-    #     for level, level_hidden_channels in zip(range(levels), hidden_channels):
-    #         squeeze_transform = transforms.SqueezeTransform()
-    #         c, h, w = squeeze_transform.get_output_shape(c, h, w)
-    #
-    #         all_transforms += [transforms.CompositeTransform(
-    #             [squeeze_transform]
-    #             + [create_transform_step(c, level_hidden_channels) for _ in range(steps_per_level)]
-    #             + [transforms.OneByOneConvolution(c)]  # End each level with a linear transformation.
-    #         )]
-    #
-    #         all_transforms.append(ReshapeTransform(
-    #             input_shape=(c, h, w),
-    #             output_shape=(c * h * w)
-    #         ))
-    #
-    #         all_transforms += [SurNSF(c * h * w, 128,
-    #                                   num_blocks=3,
-    #                                   tail_bound=2,
-    #                                   num_bins=10,
-    #                                   tails='linear')
-    #                            ]
-    #
-    #         all_transforms.append(ReshapeTransform(
-    #             input_shape=(c * h * w),
-    #             output_shape=(c * h * w,)
-    #         ))
-    #
-    #     all_transforms.append(ReshapeTransform(
-    #         input_shape=(c, h, w),
-    #         output_shape=(c * h * w,)
-    #     ))
-
-    # Convolutions in 1 x N
-    # elif flow_type == 'funnel_conv':
-    #     hc = [c] + hidden_channels
-    #     for i in range(n_funnels):
-    #         all_transforms += [
-    #             funnel_conv(hc[i], hidden_channels=hc[i + 1]),
-    #             # RotateImageTransform(),
-    #             # funnel_conv(hc[i], hidden_channels=hc[i + 1]),
-    #             # RotateImageTransform(),
-    #         ]
-    #
-    #     c, h, w = c_out, h_out, w_out
-    #     image_size = c * h * w
-    #     for level, level_hidden_channels in zip(range(levels), hidden_channels):
-    #         squeeze_transform = transforms.SqueezeTransform()
-    #         c_t, h_t, w_t = squeeze_transform.get_output_shape(c, h, w)
-    #         if c_t * h_t * w_t == image_size:
-    #             squeeze = 1
-    #             c, h, w = c_t, h_t, w_t
-    #         else:
-    #             print(f'No more squeezing after level {level + n_funnels}')
-    #             squeeze = 0
-    #
-    #         layer_transform = [create_transform_step(c, level_hidden_channels) for _ in range(steps_per_level)] + [
-    #             transforms.OneByOneConvolution(c)]
-    #         if squeeze:
-    #             layer_transform = [squeeze_transform] + layer_transform
-    #         all_transforms += [transforms.CompositeTransform(layer_transform)]
-    #
-    #     all_transforms.append(ReshapeTransform(
-    #         input_shape=(c, h, w),
-    #         output_shape=(c * h * w,)
-    #     ))
-
     elif flow_type == 'funnel_conv':
         for level, level_hidden_channels in zip(range(levels), hidden_channels):
             image_size = c * h * w
@@ -425,7 +358,8 @@ def create_transform(flow_type, size_in, size_out):
                 layer_transform = [squeeze_transform] + layer_transform
             all_transforms += [transforms.CompositeTransform(layer_transform)]
 
-            if level == 0:
+            if level == (levels - 1):
+                # if level == 0:
                 all_transforms += [funnel_conv(c, hidden_channels=level_hidden_channels)]
                 w = int((w - w % conv_width) * (conv_width - 1) / conv_width)
 
@@ -496,13 +430,11 @@ def create_flow(size_in, size_out, flow_checkpoint=None, flow_type=flow_type):
     if flow_checkpoint is not None:
         flow.load_state_dict(torch.load(flow_checkpoint))
 
+    if args.load:
+        flow.load_state_dict(torch.load(os.path.join(directory, 'flow_last.pt')))
+
     return flow
 
-
-# def train_flow(flow, train_dataset, val_dataset, dataset_dims, device,
-#                batch_size, num_steps, learning_rate, cosine_annealing, warmup_fraction,
-#                temperatures, num_bits, num_workers, intervals, multi_gpu, actnorm,
-#                optimizer_checkpoint, start_step, eta_min):
 
 def train_flow(flow, train_dataset, val_dataset, dataset_dims, device):
     flow = flow.to(device)
@@ -655,6 +587,39 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device):
         #                               global_step=step)
 
 
+def evaluate_flow(flow, val_dataset, dataset_dims, device, anomaly_dataset=None):
+    flow = flow.to(device)
+    flow.eval()
+    val_loader = DataLoader(dataset=val_dataset,
+                            batch_size=batch_size,
+                            num_workers=num_workers)
+
+    if anomaly_dataset is not None:
+        anomaly_loader = DataLoader(dataset=val_dataset,
+                                    batch_size=batch_size,
+                                    num_workers=num_workers)
+    else:
+        anomaly_loader = None
+
+    def nats_to_bits_per_dim(x):
+        c, h, w = dataset_dims
+        return autils.nats_to_bits_per_dim(x, c, h, w)
+
+    def log_prob_fn(batch):
+        return flow.log_prob(batch.to(device))
+
+    val_log_prob = autils.eval_log_density(log_prob_fn=log_prob_fn,
+                                           data_loader=val_loader)
+    val_log_prob = nats_to_bits_per_dim(val_log_prob)
+    print(val_log_prob)
+
+    if anomaly_loader is not None:
+        anomaly_log_prob = autils.eval_log_density(log_prob_fn=log_prob_fn,
+                                                   data_loader=val_loader)
+        anomaly_log_prob = nats_to_bits_per_dim(anomaly_log_prob)
+        print(anomaly_log_prob)
+
+
 def train_and_generate_images():
     train_dataset, val_dataset, (c, h, w) = get_image_data(dataset, num_bits, valid_frac=0.1)
 
@@ -683,9 +648,14 @@ def train_and_generate_images():
     # Can't set default back without messing with the nflows package directly, the problem is the zeros likelihoods
     # torch.set_default_tensor_type('torch.FloatTensor')
 
-    train_flow(flow, train_dataset, val_dataset, (c, h, w), device)
+    if args.train_flow:
+        train_flow(flow, train_dataset, val_dataset, (c, h, w), device)
     #
-    # evaluate_flow()
+    if dataset == 'mnist':
+        anomaly_dataset, val_dataset, _ = get_image_data('fashion-mnist', num_bits, valid_frac=0.1)
+    else:
+        anomaly_dataset = None
+    evaluate_flow(flow, val_dataset, (c, h, w), device, anomaly_dataset=anomaly_dataset)
 
 
 if __name__ == '__main__':

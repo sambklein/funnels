@@ -30,7 +30,7 @@ def parse_args():
                         help='Load a model?')
 
     # Model set up
-    parser.add_argument('--inp_dim', type=int, default=2,
+    parser.add_argument('--inp_dim', type=int, default=4,
                         help='The dimension of the input data.')
     parser.add_argument('--nodes', type=int, default=64,
                         help='The number of nodes in each layer used to learn the flow parameters.')
@@ -44,7 +44,7 @@ def parse_args():
                         help='The tail bound.')
     parser.add_argument('--num_bins', type=int, default=10,
                         help='The number of bins to use in the RQ-NSF.')
-    parser.add_argument('--num_add', type=int, default=1,
+    parser.add_argument('--num_add', type=int, default=3,
                         help='The number of additional layers to add.')
     parser.add_argument('--add_sur', type=int, default=1,
                         help='Whether to make the additional layers surVAE layers.')

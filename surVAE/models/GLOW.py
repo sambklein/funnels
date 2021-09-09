@@ -139,7 +139,7 @@ class ReshapeTransform(transforms.Transform):
         return inputs.reshape(-1, *self.input_shape), torch.zeros(inputs.shape[0]).to(inputs.device)
 
 
-def add_glow(size_in, levels, hidden_channels, context_channels=None, steps_per_level=5):
+def add_glow(size_in, levels, hidden_channels, context_channels=None, steps_per_level=3):
     c, h, w = size_in
     all_transforms = []
     for level, level_hidden_channels in zip(range(levels), hidden_channels):
@@ -176,7 +176,7 @@ def create_transform(size_in, context_channels=None, num_bits=8, preprocessing='
 
     # TODO: kwargs!!
     levels = 3
-    hidden_channels = 128
+    hidden_channels = 64
     hc = [hidden_channels] * levels
     mct = transforms.CompositeTransform(add_glow(size_in, levels, hc, context_channels=context_channels))
 
@@ -193,7 +193,7 @@ def create_transform(size_in, context_channels=None, num_bits=8, preprocessing='
 
 
 def create_flow(size_in, context_channels=None, flow_checkpoint=None):
-    if isinstance(context_channels, list):
+    if isinstance(context_channels, list) or isinstance(context_channels, tuple):
         context_channels = context_channels[0]
     transform, (c_out, h_out, w_out) = create_transform(size_in, context_channels=context_channels)
     distribution = distributions.StandardNormal((c_out * h_out * w_out,))

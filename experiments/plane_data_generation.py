@@ -49,7 +49,7 @@ def parse_args():
                         help='The number of bins to use in the RQ-NSF.')
     parser.add_argument('--num_add', type=int, default=1,
                         help='The number of additional layers to add.')
-    parser.add_argument('--add_sur', type=int, default=1,
+    parser.add_argument('--add_sur', type=int, default=0,
                         help='Whether to make the additional layers surVAE layers.')
     parser.add_argument('--splines', type=int, default=1,
                         help='Use RQ-NSF if true, else Real NVP.')
@@ -73,7 +73,7 @@ def parse_args():
                         help='Whether to make the additional layers surVAE layers.')
     parser.add_argument('--monitor_interval', type=int, default=100,
                         help='Whether to make the additional layers surVAE layers.')
-    parser.add_argument('--bnorm', type=int, default=1,
+    parser.add_argument('--bnorm', type=int, default=0,
                         help='Apply batch normalisation?')
 
     return parser.parse_args()
@@ -131,8 +131,6 @@ def checkerboard_test():
 
     # Set up the dataset and training parameters
     val_batch_size = 1000
-
-    testset = load_plane_dataset(args.dataset, args.n_test)
 
     optimizer = torch.optim.Adam(flow.parameters(), lr=args.lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.ndata / args.batch_size * args.n_epochs, 0)
@@ -200,31 +198,28 @@ def checkerboard_test():
 
     flow.eval()
 
-    # Plot the distribution of the encoding
-    cpu = torch.device("cpu")
-    with torch.no_grad():
-        test_data = testset.data.to(device)
-        if spline:
-            test_data = test_data * args.tail_bound
-        encoding = flow.transform_to_noise(test_data).to(cpu)
-    plt.figure()
-    getCrossFeaturePlot(encoding, svo.save_name('encoding'))
-
-    # Plot a selection of generated samples
-    with torch.no_grad():
-        samples = tensor2numpy(flow.sample(args.n_test))
-    fig, axs = plt.subplots(1, 1, figsize=(8, 8))
-    plot2Dhist(samples, axs)
-    fig.savefig(svo.save_name('samples'))
-
     # Plot the model density
     test_bs = int(1e5)
     n_batches = int(np.ceil(args.n_test / test_bs))
     scores_uniform = torch.empty((n_batches, test_bs))
+    encoding = torch.empty((n_batches, test_bs, dim))
+    samples = torch.empty((n_batches, test_bs, inp_dim))
     uniform_sample = torch.empty((n_batches, test_bs, inp_dim))
 
     with torch.no_grad():
         for i in range(n_batches):
+
+            # Plot the distribution of the encoding
+            cpu = torch.device("cpu")
+            testset = load_plane_dataset(args.dataset, test_bs)
+            test_data = testset.data.to(device)
+            if spline:
+                test_data = test_data * args.tail_bound
+            encoding[i] = flow.transform_to_noise(test_data).to(cpu)
+
+            # Plot a selection of generated samples
+            samples[i] = flow.sample(test_bs)
+
             uniform_sample[i] = torch.distributions.uniform.Uniform(torch.zeros(inp_dim) - 1,
                                                                     torch.ones(inp_dim),
                                                                     validate_args=None).sample([test_bs])
@@ -232,8 +227,17 @@ def checkerboard_test():
                 uniform_sample[i] *= args.tail_bound
             scores_uniform[i] = flow.log_prob(uniform_sample[i].to(device)).to(cpu)
 
+    encoding = encoding.view(-1, dim)
+    samples = samples.view(-1, inp_dim).cpu().numpy()
     scores_uniform = scores_uniform.view(-1)
     uniform_sample = uniform_sample.view(-1, inp_dim)
+
+    plt.figure()
+    getCrossFeaturePlot(encoding, svo.save_name('encoding'))
+
+    fig, axs = plt.subplots(1, 1, figsize=(8, 8))
+    plot2Dhist(samples, axs)
+    fig.savefig(svo.save_name('samples'))
 
     fig, ax = plt.subplots(1, 1, figsize=(9, 7))
     plot_likelihood(uniform_sample, scores_uniform, ax)

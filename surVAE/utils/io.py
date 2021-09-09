@@ -24,8 +24,11 @@ def get_log_root():
     os.makedirs(directory, exist_ok=True)
     return directory
 
-def get_checkpoint_root():
-    directory = f'{get_top_dir()}/images/checkpoints'
+def get_checkpoint_root(directory=None):
+    if directory is None:
+        directory = f'{get_top_dir()}/images/checkpoints'
+    else:
+        directory = f'{get_top_dir()}/images/{directory}'
     os.makedirs(directory, exist_ok=True)
     return directory
 

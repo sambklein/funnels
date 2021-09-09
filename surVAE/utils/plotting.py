@@ -89,4 +89,5 @@ def plot_likelihood(array, saliency, ax, n_bins=200):
     # To use this as imshow you have to rotate
     means = np.rot90(means)
     extent = [array[:, 0].min(), array[:, 0].max(), array[:, 1].min(), array[:, 1].max()]
+    # im = ax.imshow(means, extent=extent)
     im = ax.imshow(means, extent=extent, norm=colors.SymLogNorm(linthresh=1))
