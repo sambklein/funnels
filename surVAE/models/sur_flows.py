@@ -110,7 +110,7 @@ class NByOneConv(nflows.transforms.Transform):
         self.ind_to_drop = width // 2
         self.ind_mask = np.arange(self.width) != self.ind_to_drop
 
-        spline = 0
+        spline = 1
         self.one_dim_flow = [
             self.get_one_dim_flow(nstack, hidden_features, num_blocks, tail_bound, num_bins, tails, width,
                                   spline=spline) for _ in range(num_channels)]

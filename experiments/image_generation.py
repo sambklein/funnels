@@ -62,12 +62,12 @@ pad = 2  # For mnist-like datasets
 
 # Model architecture
 flow_type = args.model
-n_funnels = 2
+n_funnels = 3
 squeeze_num = 1
 
 conv_width = 7
 # steps_per_level = 10
-steps_per_level = 5
+steps_per_level = 10
 levels = 3
 multi_scale = True
 actnorm = True
@@ -84,7 +84,7 @@ spline_params = {
 }
 
 # Coupling transform net
-hidden_channels = 64
+hidden_channels = 64 if flow_type == 'funnel' else 128
 if not isinstance(hidden_channels, list):
     hidden_channels = [hidden_channels] * levels
 
@@ -105,7 +105,7 @@ learning_rate = 5e-4
 cosine_annealing = True
 eta_min = 0.
 warmup_fraction = 0.
-num_steps = 20000
+num_steps = 40000
 temperatures = [0.5, 0.75, 1.]
 
 # Training logistics
@@ -566,8 +566,8 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device):
                       .format(step, num_steps))
 
         if step > 0 and (step % intervals['save'] == 0 or step == (num_steps - 1)):
-            torch.save(optimizer.state_dict(), os.path.join(run_dir, 'optimizer_last.pt'))
-            torch.save(flow.state_dict(), os.path.join(run_dir, 'flow_last.pt'))
+            torch.save(optimizer.state_dict(), os.path.join(run_dir, f'{args.outputname}_optimizer_last.pt'))
+            torch.save(flow.state_dict(), os.path.join(run_dir, f'{args.outputname}_flow_last.pt'))
             print('It: {}/{} saved optimizer_last.pt and flow_last.pt'.format(step, num_steps))
 
         # TODO: this is actually a useful measure, but breaks everything in it's current formulation
