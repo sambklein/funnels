@@ -83,7 +83,7 @@ parser.add_argument('--apply_unconditional_transform', type=int, default=1,
                     choices=[0, 1],
                     help='Whether to unconditionally transform \'identity\' '
                          'features in coupling layer.')
-parser.add_argument('--funnel', type=float, default=0,
+parser.add_argument('--funnel', type=float, default=1,
                     help='Whether to add a single flow layer or not.')
 
 # logging and checkpoints
@@ -168,7 +168,7 @@ def make_generator(dropped_entries_shape, context_shape):
     transform_kwargs = {
         'funnel': False,
         'base_transform_type': base_transform_type,
-        'hidden_features': int(args.hidden_features / 2),
+        'hidden_features': int(args.hidden_features / 3),
         'num_transform_blocks': int(args.num_transform_blocks)
     }
     return sur_flows.make_generator(dropped_entries_shape, context_shape,
@@ -182,8 +182,19 @@ def create_base_transform(i, features, funnel=True, context_features=None, base_
         'context_shape': [features - 1],
         'generator_function': make_generator,
     }
+
+    if funnel:
+        coupling_mask = torch.ones(features).byte()
+        coupling_mask[-1] = 0
+
+        # context_features = 1
+        # features -= 1
+        # coupling_mask = create_alternating_binary_mask(features, even=(i % 2 == 0))
+    else:
+        coupling_mask = create_alternating_binary_mask(features, even=(i % 2 == 0))
+
     if base_transform_type == 'affine-coupling':
-        model = transforms.AffineCouplingTransform(mask=create_alternating_binary_mask(features, even=(i % 2 == 0)),
+        model = transforms.AffineCouplingTransform(mask=coupling_mask,
                                                    transform_net_create_fn=lambda in_features,
                                                                                   out_features: nn_.nets.ResidualNet(
                                                        in_features=in_features, out_features=out_features,
@@ -198,7 +209,7 @@ def create_base_transform(i, features, funnel=True, context_features=None, base_
         return model
     elif base_transform_type == 'quadratic-coupling':
         model = transforms.PiecewiseQuadraticCouplingTransform(
-            mask=create_alternating_binary_mask(features, even=(i % 2 == 0)),
+            mask=coupling_mask,
             transform_net_create_fn=lambda in_features, out_features: nn_.nets.ResidualNet(
                 in_features=in_features,
                 out_features=out_features,
@@ -219,7 +230,7 @@ def create_base_transform(i, features, funnel=True, context_features=None, base_
         return model
     elif base_transform_type == 'rq-coupling':
         model = transforms.PiecewiseRationalQuadraticCouplingTransform(
-            mask=create_alternating_binary_mask(features, even=(i % 2 == 0)),
+            mask=coupling_mask,
             transform_net_create_fn=lambda in_features, out_features: nn_.nets.ResidualNet(
                 in_features=in_features,
                 out_features=out_features,
@@ -284,7 +295,8 @@ def create_transform(inp_dim, context_features=None, funnel=False, base_transfor
     transform_list = []
     dim = inp_dim
     if funnel:
-        hidden_features = int(5 * hidden_features / 6)
+        # hidden_features = int(5 * hidden_features / 6)
+        hidden_features = int(hidden_features)
     for i in range(args.num_flow_steps):
         # funnel_i = (i == 0) * funnel  # (i == 2) * funnel
         funnel_i = i < funnel  # (i == 2) * funnel

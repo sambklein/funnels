@@ -437,6 +437,20 @@ class BaseCouplingFunnel(nn.Module):
         output, log_contr = self.coupling_inn.inverse(inputs, context=context)
         return output, log_contr + likelihood.squeeze()
 
+    # def forward(self, inputs, context=None):
+    #     to_keep = inputs[:, :-1, ...]
+    #     to_drop = inputs[:, -1, ...].view(-1, 1)
+    #     output, log_contr = self.coupling_inn.forward(to_keep, context=to_drop)
+    #     likelihood = self.generator.log_prob(to_drop, context=to_keep)
+    #     return output, log_contr + likelihood
+    #
+    # def inverse(self, inputs, context=None):
+    #     input_dropped, likelihood = self.generator.sample_and_log_prob(1, context=inputs)
+    #     input_dropped = input_dropped.squeeze().unsqueeze(1)
+    #     faux_output, log_contr = self.coupling_inn.inverse(inputs, context=input_dropped)
+    #     output = torch.cat((faux_output, input_dropped), 1)
+    #     return output, log_contr + likelihood.squeeze()
+
 
 class BaseAutoregressiveFunnel(nn.Module):
     def __init__(self, autoregressive_inn, autoregressive_inn_kwargs, n_drop, generator_function):
