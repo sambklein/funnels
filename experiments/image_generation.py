@@ -1,3 +1,5 @@
+import json
+
 from surVAE.data.base import load_num_batches
 from surVAE.data.image_data import get_image_data, Preprocess
 import torch
@@ -13,7 +15,7 @@ from torchvision.utils import make_grid, save_image
 
 # def config():
 # Saving
-from surVAE.models.sur_flows import NByOneConv, SurNSF, surRqNSF
+from surVAE.models.sur_flows import NByOneConv, SurNSF, surRqNSF, NByOneSlice
 from surVAE.utils.io import save_object
 from surVAE.utils import autils
 import time
@@ -32,80 +34,153 @@ def parse_args():
                         help='Choose the base output directory')
     parser.add_argument('-n', '--outputname', type=str, default='local', help='Set the output name directory')
     parser.add_argument('--load', type=int, default=0, help='Load a model?')
-    parser.add_argument('--train_flow', type=int, default=0, help='Train the flow?')
+    parser.add_argument('--train_flow', type=int, default=1, help='Train the flow?')
 
     # Model set up
-    parser.add_argument('--model', type=str, default='funnel',
+    parser.add_argument('--model', type=str, default='funnel_conv',
                         help='The dimension of the input data.')
+    # TODO: implement slicing surjection for dropping channels as well
+    parser.add_argument('--slice', type=int, default=1,
+                        help='Use a funnel or slice the tensor?')
+    parser.add_argument('--funnel_first', type=int, default=1,
+                        help='The dimension of the input data.')
+    parser.add_argument('--n_funnels', type=int, default=3,
+                        help='The number of funnel layers to apply.')
+    parser.add_argument('--conv_width', type=int, default=4,
+                        help='The width of the convolutional kernel to apply.')
+    parser.add_argument('--steps_per_level', type=int, default=7,
+                        help='The number of steps per GLOW type level.')
+    parser.add_argument('--levels', type=int, default=3,
+                        help='The number of levels to apply to the data.')
+    parser.add_argument('--multi_scale', type=int, default=0,
+                        help='Multi scale architecture?')
+    parser.add_argument('--actnorm', type=int, default=1,
+                        help='Use actnorm?')
+    parser.add_argument('--coupling_layer_type', type=str, default='rational_quadratic_spline',
+                        help='The type of coupling layer to apply to the data.')
+    parser.add_argument('--hidden_channels', type=int, default=64,
+                        help='The number of hidden channels in the nets that learn flow param.')
+    parser.add_argument('--use_resnet', type=int, default=1,
+                        help='Use resnet layers to learn flow param.?')
+    parser.add_argument('--num_res_blocks', type=int, default=3,
+                        help='Number of resnet blocks if using resnet.')
+    parser.add_argument('--resnet_batchnorm', type=int, default=1,
+                        help='Use batchnorm in resnet layers?')
+    parser.add_argument('--dropout_prob', type=float, default=0.2,
+                        help='Dropout prob in net for learning flow param.')
+    # parser.add_argument('--spline_params', type=str,
+    #                     default=json.dumps({
+    #                         "apply_unconditional_transform": False,
+    #                         "min_bin_height": 0.001,
+    #                         "min_bin_width": 0.001,
+    #                         "min_derivative": 0.001,
+    #                         "num_bins": 2,
+    #                         "tail_bound": 3.0
+    #                     }),
+    #                     help='Dropout prob in net for learning flow param.')
+    parser.add_argument('--apply_unconditional_transform', type=int, default=0,
+                        help='Spline conditional transformation?')
+    parser.add_argument('--min_bin_height', type=float, default=0.001,
+                        help='Minimum spline bin height.')
+    parser.add_argument('--min_bin_width', type=float, default=0.001,
+                        help='Minimum spline bin width.')
+    parser.add_argument('--min_derivative', type=float, default=0.001,
+                        help='Minimum spline derivative.')
+    parser.add_argument('--num_bins', type=int, default=2,
+                        help='Number of bins in the spline.')
+    parser.add_argument('--tail_bound', type=float, default=3.0,
+                        help='Spline tail bound.')
 
     # Dataset and training parameters
-    parser.add_argument('--dataset', type=str, default='mnist',
+    parser.add_argument('--dataset', type=str, default='cifar-10',
                         help='The name of the plane dataset on which to train.')
+    parser.add_argument('--valid_frac', type=float, default=0.01,
+                        help='The fraction of samples to take for validation.')
+    parser.add_argument('--num_bits', type=int, default=5,
+                        help='The number of bits to take in the image.')
+    parser.add_argument('--pad', type=int, default=2,
+                        help='The amount of padding to apply.')
+    parser.add_argument('--batch_size', type=int, default=512,
+                        help='Batch size.')
+    parser.add_argument('--learning_rate', type=float, default=0.0005,
+                        help='Learning rate.')
+    parser.add_argument('--cosine_annealing', type=int, default=1,
+                        help='Use cosine annealing?')
+    parser.add_argument('--eta_min', type=float, default=0.0,
+                        help='The min eta in cosine annealing schedule.')
+    parser.add_argument('--warmup_fraction', type=float, default=0.0,
+                        help='The warmp up fractionof the training steps.')
+    parser.add_argument('--num_steps', type=int, default=200000,
+                        help='The number of training steps to run for.')
+
+    # reproducibility
+    parser.add_argument('--seed', type=int, default=656693568,
+                        help='Random seed for PyTorch and NumPy.')
 
     return parser.parse_args()
 
 
 args = parse_args()
 
-svo = save_object(f'{args.outputdir}_{args.dataset}_{args.model}', exp_name=args.outputname)
+torch.manual_seed(args.seed)
+np.random.seed(args.seed)
+
+svo = save_object(f'{args.outputdir}_{args.dataset}_{args.model}', exp_name=args.outputname, args=args)
 directory = svo.image_dir
 # Dataset
 dataset = args.dataset
 num_workers = 0
-valid_frac = 0.01
 
 # Pre-processing
 preprocessing = 'glow'
-alpha = .05
-num_bits = 8
-pad = 2  # For mnist-like datasets
+num_bits = args.num_bits
+pad = args.pad  # For mnist-like datasets
 
 # Model architecture
 flow_type = args.model
-n_funnels = 3
-squeeze_num = 1
+n_funnels = args.n_funnels
 
-conv_width = 7
+conv_width = args.conv_width
 # steps_per_level = 10
-steps_per_level = 10
-levels = 3
-multi_scale = True
-actnorm = True
+steps_per_level = args.steps_per_level
+levels = args.levels
+multi_scale = args.multi_scale
+actnorm = args.actnorm
 
 # Coupling transform
-coupling_layer_type = 'rational_quadratic_spline'
+coupling_layer_type = args.coupling_layer_type
+# spline_params = args.spline_params[0]
+# spline_params = json.loads(args.spline_params)
 spline_params = {
-    'num_bins': 5,
-    'tail_bound': 1.,
-    'min_bin_width': 1e-3,
-    'min_bin_height': 1e-3,
-    'min_derivative': 1e-3,
-    'apply_unconditional_transform': False
+    "apply_unconditional_transform": args.apply_unconditional_transform,
+    "min_bin_height": args.min_bin_height,
+    "min_bin_width": args.min_bin_width,
+    "min_derivative": args.min_derivative,
+    "num_bins": args.num_bins,
+    "tail_bound": args.tail_bound
 }
 
 # Coupling transform net
-hidden_channels = 64 if flow_type == 'funnel' else 128
+hidden_channels = int(args.hidden_channels / 1.3) if flow_type[:6] == 'funnel' else args.hidden_channels
 if not isinstance(hidden_channels, list):
     hidden_channels = [hidden_channels] * levels
 
 if flow_type == 'glow':
     n_funnels = 0
     conv_width = 1
-# elif flow_type == 'funnel':
-#     levels = levels - n_funnels
 
-use_resnet = True
-num_res_blocks = 3  # If using resnet
-resnet_batchnorm = True
-dropout_prob = 0.
+use_resnet = args.use_resnet
+num_res_blocks = args.num_res_blocks  # If using resnet
+resnet_batchnorm = args.resnet_batchnorm
+dropout_prob = args.dropout_prob
 
 # Optimization
-batch_size = 32
-learning_rate = 5e-4
-cosine_annealing = True
-eta_min = 0.
-warmup_fraction = 0.
-num_steps = 40000
+batch_size = args.batch_size
+learning_rate = args.learning_rate
+cosine_annealing = args.cosine_annealing
+eta_min = args.eta_min
+warmup_fraction = args.warmup_fraction
+num_steps = args.num_steps
 temperatures = [0.5, 0.75, 1.]
 
 # Training logistics
@@ -287,13 +362,30 @@ def funnel_conv(num_channels, hidden_channels):
     # if actnorm:
     #     step_transforms.append(transforms.ActNorm(num_channels))
 
-    step_transforms.extend([
-        NByOneConv(num_channels, hidden_features=hidden_channels, width=conv_width, num_blocks=num_res_blocks,
-                   nstack=steps_per_level,
-                   # tail_bound=spline_params['tail_bound'],
-                   tail_bound=4.,
-                   num_bins=spline_params['num_bins']),
-    ])
+    if args.slice:
+        step_transforms.extend([
+            NByOneSlice(num_channels,
+                        hidden_features=hidden_channels,
+                        width=conv_width,
+                        num_blocks=num_res_blocks,
+                        nstack=steps_per_level,
+                        # tail_bound=spline_params['tail_bound'],
+                        tail_bound=4.,
+                        num_bins=spline_params['num_bins'],
+                        spline=1)
+        ])
+    else:
+        step_transforms.extend([
+            NByOneConv(num_channels,
+                       hidden_features=hidden_channels,
+                       width=conv_width,
+                       num_blocks=num_res_blocks,
+                       nstack=steps_per_level,
+                       # tail_bound=spline_params['tail_bound'],
+                       tail_bound=4.,
+                       num_bins=spline_params['num_bins'],
+                       spline=1)
+        ])
 
     return transforms.CompositeTransform(step_transforms)
 
@@ -341,6 +433,12 @@ def create_transform(flow_type, size_in, size_out):
 
     elif flow_type == 'funnel_conv':
         for level, level_hidden_channels in zip(range(levels), hidden_channels):
+
+            if args.funnel_first:
+                if level == 0:
+                    all_transforms += [funnel_conv(c, hidden_channels=level_hidden_channels)]
+                    w = int((w - w % conv_width) * (conv_width - 1) / conv_width)
+
             image_size = c * h * w
             squeeze_factor = 2
             squeeze_transform = transforms.SqueezeTransform(factor=squeeze_factor)
@@ -358,10 +456,13 @@ def create_transform(flow_type, size_in, size_out):
                 layer_transform = [squeeze_transform] + layer_transform
             all_transforms += [transforms.CompositeTransform(layer_transform)]
 
-            if level == (levels - 1):
-                # if level == 0:
-                all_transforms += [funnel_conv(c, hidden_channels=level_hidden_channels)]
-                w = int((w - w % conv_width) * (conv_width - 1) / conv_width)
+            # if level == (levels - 1):
+            if not args.funnel_first:
+                if level == 0:
+                    all_transforms += [funnel_conv(c, hidden_channels=level_hidden_channels)]
+                    w = int((w - w % conv_width) * (conv_width - 1) / conv_width)
+
+            print(c, h, w)
 
         all_transforms.append(ReshapeTransform(
             input_shape=(c, h, w),
@@ -409,11 +510,12 @@ def create_transform(flow_type, size_in, size_out):
     mct = transforms.CompositeTransform(all_transforms)
 
     # Inputs to the model in [0, 2 ** num_bits]
-
+    # Only ever going to use glow preprocessing to follow prescription of NSF paper
     if preprocessing == 'glow':
         # Map to [-0.5,0.5]
         preprocess_transform = transforms.AffineScalarTransform(scale=1. / 2 ** num_bits,
                                                                 shift=-0.5)
+
     else:
         raise RuntimeError('Unknown preprocessing type: {}'.format(preprocessing))
 
@@ -431,7 +533,7 @@ def create_flow(size_in, size_out, flow_checkpoint=None, flow_type=flow_type):
         flow.load_state_dict(torch.load(flow_checkpoint))
 
     if args.load:
-        flow.load_state_dict(torch.load(os.path.join(directory, 'flow_last.pt')))
+        flow.load_state_dict(torch.load(os.path.join(directory, f'{args.outputname}_flow_last.pt')))
 
     return flow
 
@@ -611,7 +713,7 @@ def evaluate_flow(flow, val_dataset, dataset_dims, device, anomaly_dataset=None)
     val_log_prob = autils.eval_log_density(log_prob_fn=log_prob_fn,
                                            data_loader=val_loader)
     val_log_prob = nats_to_bits_per_dim(val_log_prob)
-    print(val_log_prob)
+    print(f'Bits per dim {val_log_prob}')
 
     if anomaly_loader is not None:
         anomaly_log_prob = autils.eval_log_density(log_prob_fn=log_prob_fn,
@@ -621,7 +723,7 @@ def evaluate_flow(flow, val_dataset, dataset_dims, device, anomaly_dataset=None)
 
 
 def train_and_generate_images():
-    train_dataset, val_dataset, (c, h, w) = get_image_data(dataset, num_bits, valid_frac=0.1)
+    train_dataset, val_dataset, (c, h, w) = get_image_data(dataset, num_bits, valid_frac=args.valid_frac)
 
     if flow_type == 'funnel_conv':
         # c_out, h_out, w_out = c, int(h / conv_width ** n_funnels), int(w / conv_width ** n_funnels)

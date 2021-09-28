@@ -90,36 +90,39 @@ class IdentityTransform(nflows.transforms.Transform):
         return inputs, torch.zeros(inputs.shape[0]).to(inputs.device)
 
 
-# TODO: refactor this to be a single channel convolution, then build a many channel version on top
 class NByOneConv(nflows.transforms.Transform):
     """
     An N x 1 funnel convolution with the stride fixed to N.
     """
 
-    def __init__(self, num_channels, width=2, hidden_channels=1, hidden_features=128, num_blocks=2,
-                 num_bins=10, tail_bound=1., tails='linear', nstack=10, **kwargs):
+    def __init__(self, num_channels, width=2, hidden_features=128, num_blocks=2,
+                 num_bins=10, tail_bound=1., tails='linear', nstack=10, spline=1, transform=None, **kwargs):
         super(NByOneConv, self).__init__()
 
         # nstack = int(nstack / 2)
-        # self.component_mixer = get_transform(inp_dim=width, tails='linear', context_features=None,
-        #                                      tail_bound=tail_bound, nstack=nstack, nodes=hidden_features)
-        self.component_mixer = [IdentityTransform() for _ in range(num_channels)]
+        # self.component_mixer = nn.ModuleList([get_transform(inp_dim=width, tails='linear', context_features=None,
+        #                                       tail_bound=tail_bound, nstack=nstack, nodes=hidden_features) for _ in
+        #                         range(num_channels)])
+        self.component_mixer = nn.ModuleList([IdentityTransform() for _ in range(num_channels)])
 
         self.num_channels = num_channels
         self.width = width
         self.ind_to_drop = width // 2
         self.ind_mask = np.arange(self.width) != self.ind_to_drop
 
-        spline = 1
-        self.one_dim_flow = [
+        self.one_dim_flow = nn.ModuleList([
             self.get_one_dim_flow(nstack, hidden_features, num_blocks, tail_bound, num_bins, tails, width,
-                                  spline=spline) for _ in range(num_channels)]
+                                  spline=spline) for _ in range(num_channels)])
 
         # self.transform = [get_transform(inp_dim=width, context_features=None, tails='linear', nodes=hidden_features,
         #                                 tail_bound=tail_bound, nstack=nstack) for _ in range(num_channels)]
-        self.transform = [get_transform(inp_dim=width - 1, context_features=1, tails='linear', nodes=hidden_features,
-                                        tail_bound=tail_bound, nstack=nstack, spline=1) for _ in
-                          range(num_channels)]
+        if transform is None:
+            self.transform = nn.ModuleList(
+                [get_transform(inp_dim=width - 1, context_features=1, tails='linear', nodes=hidden_features,
+                               tail_bound=tail_bound, nstack=nstack, spline=spline) for _ in
+                 range(num_channels)])
+        else:
+            self.transform = transform
 
     def get_one_dim_flow(self, nstack, hidden_features, num_blocks, tail_bound, num_bins, tails, width, spline=True):
         inp_dim = 1
@@ -173,7 +176,7 @@ class NByOneConv(nflows.transforms.Transform):
             likelihood_contribution += (
                     self.one_dim_flow[i].log_prob(inputs_to_drop, context=one_d_context) + jacobian
                     + mixer_contrib
-            ).view(batch_size, -1).mean(-1)
+            ).view(batch_size, -1).sum(-1)
         return output.permute(1, 0, 2, 3), likelihood_contribution
 
     def forward(self, inputs, context=None):
@@ -202,18 +205,17 @@ class NByOneConv(nflows.transforms.Transform):
             input_mapped, output_likelihood = self.transform[i].inverse(channel, context=input_dropped)
             output_temp[:, self.ind_to_drop] = input_dropped.view(-1)
             output_temp[:, self.ind_mask] = input_mapped
-            un_mixed_output = torch.cat([input_mapped, input_dropped], 1)
+            # un_mixed_output = torch.cat([input_mapped, input_dropped], 1)
             # input_mapped, output_likelihood = self.transform[i].inverse(torch.cat((input_dropped, channel), 1))
             # output_temp[:, self.ind_to_drop] = input_mapped[:, 0].view(-1)
             # input_mapped = input_mapped[:, 1:]
             # output_temp[:, self.ind_mask] = input_mapped
 
             o_p, o_p_contrib = self.component_mixer[i].inverse(output_temp)
-            one_d_context = input_mapped
             likelihood_contribution += (
                     self.one_dim_flow[i].log_prob(input_dropped,
                                                   context=one_d_context) + output_likelihood + o_p_contrib
-            ).view(batch_size, -1).mean(-1)
+            ).view(batch_size, -1).sum(-1)
             output[i] = o_p.view(batch_size, h, new_w)
         return output.permute(1, 0, 2, 3), likelihood_contribution
 
@@ -226,6 +228,74 @@ class NByOneConv(nflows.transforms.Transform):
         output, likelihood = self._unpadded_inverse(inputs, context=context)
         output = torch.cat((output, baggage), -1)
         return output, likelihood
+
+
+class NByOneSlice(NByOneConv):
+
+    def __init__(self, num_channels, width=2, hidden_features=128, num_blocks=2,
+                 num_bins=10, tail_bound=1., tails='linear', nstack=10, spline=1, **kwargs):
+
+        transform = nn.ModuleList(
+            [get_transform(inp_dim=width, context_features=None, tails='linear', nodes=hidden_features,
+                           tail_bound=tail_bound, nstack=nstack, spline=spline) for _ in range(num_channels)])
+        super(NByOneSlice, self).__init__(num_channels,
+                                          width=width,
+                                          hidden_features=hidden_features,
+                                          num_blocks=num_blocks,
+                                          num_bins=num_bins,
+                                          tail_bound=tail_bound,
+                                          tails=tails,
+                                          nstack=nstack,
+                                          spline=spline,
+                                          transform=transform,
+                                          **kwargs)
+
+    def _unpadded_forward(self, inputs, context=None):
+        if inputs.dim() != 4:
+            not_an_image_exception()
+        batch_size, c, h, w = inputs.shape
+        new_w = w - w // self.width
+        output = torch.zeros((c, batch_size, h, new_w))
+        likelihood_contribution = torch.zeros((batch_size,))  # 0
+        inputs = inputs.permute(1, 0, 2, 3)
+        for i, channel in enumerate(inputs):
+            channel, mixer_contrib = self.component_mixer[i].forward(channel.reshape(-1, self.width))
+            inputs_to_drop = channel[:, self.ind_to_drop].view(-1, 1)
+            z_unsliced, jacobian = self.transform[i].forward(channel)
+            z = z_unsliced[:, self.ind_mask]
+            output[i] = z.view(batch_size, h, new_w)
+            likelihood_contribution += (
+                    self.one_dim_flow[i].log_prob(inputs_to_drop, context=z) + jacobian
+                    + mixer_contrib
+            ).view(batch_size, -1).sum(-1)
+        return output.permute(1, 0, 2, 3), likelihood_contribution
+
+    def _unpadded_inverse(self, inputs, context=None):
+
+        if inputs.dim() != 4:
+            not_an_image_exception()
+        batch_size, c, h, w = inputs.shape
+        new_w = w + w // (self.width - 1)
+        output = torch.zeros((c, batch_size, h, new_w))
+        likelihood_contribution = 0
+        inputs = inputs.permute(1, 0, 2, 3)
+        for i, channel in enumerate(inputs):
+            channel = channel.reshape(-1, self.width - 1)
+            output_temp = torch.zeros((channel.shape[0], channel.shape[1] + 1))
+            z = channel
+            input_dropped = self.one_dim_flow[i].sample(1, context=z).squeeze().view(-1, 1)
+
+            output_temp[:, self.ind_to_drop] = input_dropped.view(-1)
+            output_temp[:, self.ind_mask] = z
+            output_mapped, output_likelihood = self.transform[i].inverse(output_temp)
+
+            o_p, o_p_contrib = self.component_mixer[i].inverse(output_mapped)
+            likelihood_contribution += (
+                    self.one_dim_flow[i].log_prob(input_dropped, context=z)
+                    + output_likelihood + o_p_contrib
+            ).view(batch_size, -1).sum(-1)
+            output[i] = o_p.view(batch_size, h, new_w)
+        return output.permute(1, 0, 2, 3), likelihood_contribution
 
 
 class MakeAnImage(nflows.transforms.Transform):
@@ -249,6 +319,7 @@ class UnMakeAnImage(MakeAnImage):
 
 transform_kwargs = {'tail_bound': 4., 'nstack': 3, 'nodes': 64, 'spline': True, 'tails': 'linear'}
 
+
 class make_generator(flows.Flow):
 
     def __init__(self, dropped_entries_shape, context_shape, transform_func=get_transform, transform_kwargs=None):
@@ -271,18 +342,15 @@ class make_generator(flows.Flow):
         #                                                     self.tail_bound * torch.ones(self.input_size))
         super(make_generator, self).__init__(transform, base_dist)
 
-
     def make_list(self, var):
         if not isinstance(var, list):
             var = [var]
         return var
 
-
     def _log_prob(self, inputs, context):
         inputs = inputs.view(-1, self.input_size)
         context = context.view(-1, self.context_size)
         return super(make_generator, self)._log_prob(inputs, context)
-
 
     def _sample(self, num_samples, context):
         context = context.view(-1, self.context_size)
@@ -410,16 +478,44 @@ class surRqNSF(transforms.PiecewiseRationalQuadraticCouplingTransform):
         return output, torch.zeros(inputs.shape[0]).to(inputs.device)
 
 
+class BaseCouplingFunnelAlt(nn.Module):
+    def __init__(self, coupling_inn, context_shape, dropped_entries_shape, generator_function, **kwargs):
+        super(BaseCouplingFunnelAlt, self).__init__()
+        self.coupling_inn = coupling_inn
+        self.features = coupling_inn.features
+        self.keep_mask = torch.zeros(self.features, dtype=torch.bool)
+        feature_to_keep = self.coupling_inn.transform_features
+        self.keep_mask[feature_to_keep] = 1
+        _, self.sorted_indices = torch.sort(
+            torch.cat((torch.arange(self.features)[~self.keep_mask], feature_to_keep)))
+
+        # A flow that can generate one dropped index of the input data given the other data entries
+        self.generator = generator_function(dropped_entries_shape, context_shape)
+
+    def forward(self, inputs, context=None):
+        faux_output, log_contr = self.coupling_inn.forward(inputs, context=context)
+        output = faux_output[:, self.keep_mask, ...]
+        likelihood = self.generator.log_prob(faux_output[:, ~self.keep_mask, ...], context=output)
+        return output, log_contr + likelihood
+
+    def inverse(self, inputs, context=None):
+        input_dropped, likelihood = self.generator.sample_and_log_prob(1, context=inputs)
+        input_dropped = input_dropped.squeeze()
+        inn_input = torch.cat((inputs, input_dropped), 1)[:, self.sorted_indices, ...]
+        output, log_contr = self.coupling_inn.inverse(inn_input, context=context)
+        return output, log_contr + likelihood.squeeze()
+
+
 class BaseCouplingFunnel(nn.Module):
     def __init__(self, coupling_inn, context_shape, dropped_entries_shape, generator_function, **kwargs):
         super(BaseCouplingFunnel, self).__init__()
         self.coupling_inn = coupling_inn
         self.features = coupling_inn.features
         self.drop_mask = torch.ones(self.features, dtype=torch.bool)
-        feature_to_drop = self.coupling_inn.identity_features[-1]
+        feature_to_drop = self.coupling_inn.identity_features
         self.drop_mask[feature_to_drop] = 0
         _, self.sorted_indices = torch.sort(
-            torch.cat((torch.arange(self.features)[self.drop_mask], torch.tensor([feature_to_drop]))))
+            torch.cat((torch.arange(self.features)[self.drop_mask], feature_to_drop)))
 
         # A flow that can generate one dropped index of the input data given the other data entries
         self.generator = generator_function(dropped_entries_shape, context_shape)
@@ -432,7 +528,9 @@ class BaseCouplingFunnel(nn.Module):
 
     def inverse(self, inputs, context=None):
         input_dropped, likelihood = self.generator.sample_and_log_prob(1, context=inputs)
-        input_dropped = input_dropped.squeeze().unsqueeze(1)
+        input_dropped = input_dropped.squeeze()
+        if input_dropped.dim() == 1:
+            input_dropped = input_dropped.unsqueeze(1)
         inputs = torch.cat((inputs, input_dropped), 1)[:, self.sorted_indices, ...]
         output, log_contr = self.coupling_inn.inverse(inputs, context=context)
         return output, log_contr + likelihood.squeeze()
@@ -453,14 +551,17 @@ class BaseCouplingFunnel(nn.Module):
 
 
 class BaseAutoregressiveFunnel(nn.Module):
-    def __init__(self, autoregressive_inn, autoregressive_inn_kwargs, n_drop, generator_function):
+    def __init__(self, autoregressive_inn, autoregressive_inn_kwargs, n_drop, generator_function,
+                 generator_kwargs=None):
         super(BaseAutoregressiveFunnel, self).__init__()
+        if generator_kwargs is None:
+            generator_kwargs = {}
         autoregressive_inn_kwargs['features'] -= n_drop
         autoregressive_inn_kwargs['context_features'] = n_drop
         self.autoregressive_inn = autoregressive_inn(**autoregressive_inn_kwargs)
         self.n_drop = n_drop
         # A flow that can generate one dropped index of the input data given the other data entries
-        self.generator = generator_function(n_drop, autoregressive_inn_kwargs['features'])
+        self.generator = generator_function(n_drop, autoregressive_inn_kwargs['features'], **generator_kwargs)
 
     def arg_missing_exception(self, arg):
         raise Exception('Need to pass {}')

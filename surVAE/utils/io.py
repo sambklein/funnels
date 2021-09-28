@@ -84,9 +84,9 @@ class save_object():
     def read_experiment(self, json_info):
         with open(json_info, "r") as file_name:
             json_dict = json.load(file_name)
-        dict = json.loads(json_dict)
-        self.exp_name = dict['outputname']
-        return dict
+        dict_info = json.loads(json_dict)
+        self.exp_name = dict_info['outputname']
+        return dict_info
 
 
 # def make_splits(data):

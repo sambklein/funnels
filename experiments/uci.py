@@ -21,7 +21,7 @@ import surVAE.utils as utils
 from nflows import distributions, flows, transforms
 
 from surVAE.models import sur_flows
-from surVAE.utils.io import get_timestamp, on_cluster, get_log_root, get_checkpoint_root
+from surVAE.utils.io import get_timestamp, on_cluster, get_log_root, get_checkpoint_root, save_object
 
 parser = argparse.ArgumentParser()
 
@@ -32,7 +32,7 @@ parser.add_argument('-n', '--outputname', type=str, default='local',
                     help='Set the output name directory')
 
 # data
-parser.add_argument('--dataset_name', type=str, default='gas',
+parser.add_argument('--dataset_name', type=str, default='bsds300',
                     choices=['power', 'gas', 'hepmass', 'miniboone', 'bsds300'],
                     help='Name of dataset to use.')
 parser.add_argument('--train_batch_size', type=int, default=64,
@@ -56,7 +56,7 @@ parser.add_argument('--grad_norm_clip_value', type=float, default=5.,
                     help='Value by which to clip norm of gradients.')
 
 # flow details
-parser.add_argument('--base_transform_type', type=str, default='affine-coupling',
+parser.add_argument('--base_transform_type', type=str, default='rq-coupling',
                     choices=['affine-coupling', 'quadratic-coupling', 'rq-coupling',
                              'affine-autoregressive', 'quadratic-autoregressive',
                              'rq-autoregressive'],
@@ -83,7 +83,9 @@ parser.add_argument('--apply_unconditional_transform', type=int, default=1,
                     choices=[0, 1],
                     help='Whether to unconditionally transform \'identity\' '
                          'features in coupling layer.')
-parser.add_argument('--funnel', type=float, default=1,
+parser.add_argument('--funnel', type=int, default=1,
+                    help='Whether to add a single flow layer or not.')
+parser.add_argument('--funnel_level', type=int, default=2,
                     help='Whether to add a single flow layer or not.')
 
 # logging and checkpoints
@@ -95,6 +97,7 @@ parser.add_argument('--seed', type=int, default=1638128,
                     help='Random seed for PyTorch and NumPy.')
 
 args = parser.parse_args()
+svo = save_object(args.outputdir, args.outputname, args=args)
 
 torch.manual_seed(args.seed)
 np.random.seed(args.seed)
@@ -138,6 +141,8 @@ test_loader = data.DataLoader(
 
 features = train_dataset.dim
 
+is_auto_r = args.base_transform_type.split('-')[-1] == 'autoregressive'
+
 
 def create_linear_transform(features):
     if args.linear_transform_type == 'permutation':
@@ -164,32 +169,48 @@ def make_generator(dropped_entries_shape, context_shape):
     # transform_kwargs = {}
     base_transform_type = args.base_transform_type
     if (base_transform_type in ['rq-coupling', 'quadratic-coupling']) and (dropped_entries_shape[0] == 1):
+        # If this is a 1D Flow it needs to be made autoregressive, it is the same thing in the end
+        # TODO: This is a terrible way to handle this
         base_transform_type = base_transform_type[:-8] + 'autoregressive'
+    nh_fact = 4 if is_auto_r else 3
+    # nh_fact = 3
+    nf_fact = 2  # if is_auto_r else 1
+    n_hiddens = int(args.hidden_features / nh_fact)
     transform_kwargs = {
         'funnel': False,
         'base_transform_type': base_transform_type,
-        'hidden_features': int(args.hidden_features / 3),
-        'num_transform_blocks': int(args.num_transform_blocks)
+        'hidden_features': n_hiddens,
+        'num_transform_blocks': int(args.num_transform_blocks),
+        'num_flow_steps': int(args.num_flow_steps / nf_fact)
     }
     return sur_flows.make_generator(dropped_entries_shape, context_shape,
                                     transform_func=create_transform, transform_kwargs=transform_kwargs)
 
 
-def create_base_transform(i, features, funnel=True, context_features=None, base_transform_type='rq-coupling',
+def create_base_transform(i, features, funnel=1, context_features=None, base_transform_type='rq-coupling',
                           hidden_features=128, num_transform_blocks=3):
-    funnel_kwargs = {
-        'dropped_entries_shape': [1],
-        'context_shape': [features - 1],
-        'generator_function': make_generator,
-    }
+    if funnel > 0:
+        funnel_kwargs = {
+            'dropped_entries_shape': [funnel],
+            'context_shape': [features - funnel],
+            'generator_function': make_generator,
+        }
+        funnel_base_model = sur_flows.BaseCouplingFunnel
 
-    if funnel:
         coupling_mask = torch.ones(features).byte()
-        coupling_mask[-1] = 0
+        coupling_mask[-funnel:] = 0
 
-        # context_features = 1
-        # features -= 1
-        # coupling_mask = create_alternating_binary_mask(features, even=(i % 2 == 0))
+    elif funnel == -1:
+        funnel_kwargs = {
+            'dropped_entries_shape': [features - 2],
+            'context_shape': [2],
+            'generator_function': make_generator,
+        }
+        funnel_base_model = sur_flows.BaseCouplingFunnelAlt
+
+        coupling_mask = torch.zeros(features).byte()
+        coupling_mask[:2] = 1
+
     else:
         coupling_mask = create_alternating_binary_mask(features, even=(i % 2 == 0))
 
@@ -205,7 +226,7 @@ def create_base_transform(i, features, funnel=True, context_features=None, base_
                                                        use_batch_norm=args.use_batch_norm)
                                                    )
         if funnel:
-            model = sur_flows.BaseCouplingFunnel(model, **funnel_kwargs)
+            model = funnel_base_model(model, **funnel_kwargs)
         return model
     elif base_transform_type == 'quadratic-coupling':
         model = transforms.PiecewiseQuadraticCouplingTransform(
@@ -226,7 +247,7 @@ def create_base_transform(i, features, funnel=True, context_features=None, base_
             apply_unconditional_transform=args.apply_unconditional_transform
         )
         if funnel:
-            model = sur_flows.BaseCouplingFunnel(model, **funnel_kwargs)
+            model = funnel_base_model(model, **funnel_kwargs)
         return model
     elif base_transform_type == 'rq-coupling':
         model = transforms.PiecewiseRationalQuadraticCouplingTransform(
@@ -247,8 +268,9 @@ def create_base_transform(i, features, funnel=True, context_features=None, base_
             apply_unconditional_transform=args.apply_unconditional_transform
         )
         if funnel:
-            model = sur_flows.BaseCouplingFunnel(model, **funnel_kwargs)
+            model = funnel_base_model(model, **funnel_kwargs)
         return model
+
     elif base_transform_type == 'affine-autoregressive':
         ag_model = transforms.MaskedAffineAutoregressiveTransform
         ag_params = {
@@ -262,6 +284,7 @@ def create_base_transform(i, features, funnel=True, context_features=None, base_
             'dropout_probability': args.dropout_probability,
             'use_batch_norm': args.use_batch_norm
         }
+
     elif base_transform_type in ['quadratic-autoregressive', 'rq-autoregressive']:
         ag_model = {'quadratic-autoregressive': transforms.MaskedPiecewiseQuadraticAutoregressiveTransform,
                     'rq-autoregressive': transforms.MaskedPiecewiseRationalQuadraticAutoregressiveTransform}[
@@ -284,23 +307,22 @@ def create_base_transform(i, features, funnel=True, context_features=None, base_
         raise ValueError
 
     if funnel:
-        model = sur_flows.BaseAutoregressiveFunnel(ag_model, ag_params, 1, sur_flows.make_generator)
+        # generator_kwargs = {'transform_func': }
+        model = sur_flows.BaseAutoregressiveFunnel(ag_model, ag_params, 1, make_generator)
     else:
         model = ag_model(**ag_params)
     return model
 
 
 def create_transform(inp_dim, context_features=None, funnel=False, base_transform_type='rq-coupling',
-                     hidden_features=128, num_transform_blocks=3):
+                     hidden_features=128, num_transform_blocks=3, num_flow_steps=10):
     transform_list = []
     dim = inp_dim
     if funnel:
         # hidden_features = int(5 * hidden_features / 6)
         hidden_features = int(hidden_features)
-    for i in range(args.num_flow_steps):
-        # funnel_i = (i == 0) * funnel  # (i == 2) * funnel
-        funnel_i = i < funnel  # (i == 2) * funnel
-        # funnel_i = (i == (args.num_flow_steps - 1)) * funnel
+    for i in range(num_flow_steps):
+        funnel_i = funnel if (args.funnel_level == i) else 0
         transform_list += [create_linear_transform(dim)]
         transform_list += [
             create_base_transform(i, dim,
@@ -311,16 +333,23 @@ def create_transform(inp_dim, context_features=None, funnel=False, base_transfor
                                   num_transform_blocks=num_transform_blocks)
         ]
         if funnel_i:
-            dim -= 1
+            if funnel > 0:
+                dim -= funnel
+            else:
+                dim = 2
     transform_list += [create_linear_transform(int(dim))]
     transform = transforms.CompositeTransform(transform_list)
     return transform
 
 
 # create model
-distribution = distributions.StandardNormal((int(features - args.funnel),))
+if args.funnel >= 0:
+    distribution = distributions.StandardNormal((int(features - args.funnel),))
+elif args.funnel == -1:
+    distribution = distributions.StandardNormal((2,))
 transform = create_transform(inp_dim=features, funnel=args.funnel, base_transform_type=args.base_transform_type,
-                             hidden_features=args.hidden_features, num_transform_blocks=args.num_transform_blocks)
+                             hidden_features=args.hidden_features, num_transform_blocks=args.num_transform_blocks,
+                             num_flow_steps=args.num_flow_steps)
 flow = flows.Flow(transform, distribution).to(device)
 
 n_params = get_num_parameters(flow)

@@ -2,7 +2,7 @@ from nflows import transforms
 from torch.nn import functional as F
 
 
-def get_transform(inp_dim=1, nodes=64, num_blocks=2, nstack=2, tails=None, tail_bound=1., num_bins=10,
+def get_transform(inp_dim=1, nodes=64, num_blocks=2, nstack=2, tails='linear', tail_bound=1., num_bins=10,
                   context_features=1, lu=1, bnorm=1, spline=True, activation=F.leaky_relu):
     transform_list = []
     for i in range(nstack):
