@@ -127,9 +127,10 @@ class NByOneStandardConv(nflows.transforms.Transform):
         self.width = width
         self.n_dropped = num_channels * (width ** 2 - 1)
 
-        self.decoder = self.get_one_dim_flow(num_channels, self.n_cond, width, nstack, hidden_features, num_blocks, tail_bound,
-                                             num_bins, tails, spline=spline)
+        # self.decoder = self.get_one_dim_flow(num_channels, self.n_cond, width, nstack, hidden_features, num_blocks, tail_bound,
+        #                                      num_bins, tails, spline=spline)
         # self.decoder = ConditionalGaussianDecoder(num_channels * (width ** 2 - 1), self.n_cond)
+        self.decoder = ConditionalFixedDecoder(num_channels * (width ** 2 - 1), self.n_cond)
 
     def get_one_dim_flow(self, channels, ncond, width, nstack, hidden_features, num_blocks, tail_bound, num_bins, tails,
                          spline=True):
@@ -171,15 +172,10 @@ class NByOneStandardConv(nflows.transforms.Transform):
         # TODO: make this a property that is defined at initialisation
         self.mx = mx[1:]
         dropped_sections = transformed_blocks[..., self.mx]
-        # TODO: check that the reshape is done correctly to have components match up
         cond_likelihood = self.decoder.log_prob(
             dropped_sections.view(-1, self.n_dropped),
             context=self.gather_z(z).transpose(1, 2).reshape(-1, self.n_cond)
         )
-        # cond_likelihood = self.decoder.log_prob(
-        #     dropped_sections.view(-1, self.n_dropped),
-        #     context=z.transpose(1, 3).reshape(-1, self.num_channels)
-        # )
         cond_likelihood = cond_likelihood.view(batch_size, -1).sum(-1)
         likelihood_contribution = log_detJ + cond_likelihood
         return z, likelihood_contribution
@@ -508,9 +504,10 @@ class ConditionalGaussianDecoder(nflows.distributions.Distribution):
             transform_kwargs = {}
         self.output_size = int(np.prod(dropped_entries_shape))
         self.context_size = int(np.prod(context_shape))
-        self.rpi = (2 * np.pi) ** (1 / 2)
+        self.rpi = 0.5 * torch.log(torch.tensor(2 * np.pi))
 
         self.net = dense_net(self.context_size, self.output_size * 2, layers=[128] * 3)
+        # self.net = dense_net(self.context_size, self.output_size * 2, layers=[64] * 3)
 
     def get_param(self, context):
         context = context.view(-1, self.context_size)
@@ -518,16 +515,92 @@ class ConditionalGaussianDecoder(nflows.distributions.Distribution):
 
     def _log_prob(self, inputs, context):
         mean, log_sigma = self.get_param(context)
-        sigma = log_sigma.exp()
+        sigma = torch.exp(log_sigma)
+        inputs = inputs.view(-1, self.output_size)
+        log_prob = -0.5 * ((mean - inputs) / sigma) ** 2 - log_sigma - self.rpi
+        return log_prob.sum(-1)
+
+    def _sample(self, num_samples, context):
+        # Ignore num_samples as it is always defined by the size of the context
+        mean, log_sigma = self.get_param(context)
+        sigma = torch.exp(log_sigma)
+        epsilon = torch.normal(mean=torch.zeros_like(mean), std=torch.ones_like(mean))
+        return (mean + sigma * epsilon).unsqueeze(0)
+        # return mean.unsqueeze(0)
+
+
+class ConditionalFixedDecoder(nflows.distributions.Distribution):
+
+    def __init__(self, dropped_entries_shape, context_shape, transform_kwargs=None):
+        """
+        :param dropped_entries_shape: the shape of the data that needs to be sampled and evaluated (for likelihood)
+        :param context_shape: the shape of the data that will be passed as context
+        :return: a flow capable of generating, and evaluating the likelihood, data of shape dropped_entries_shape given
+                 data of shape context_shape as context.
+        """
+        super(ConditionalFixedDecoder, self).__init__()
+        if not isinstance(transform_kwargs, dict):
+            transform_kwargs = {}
+        self.output_size = int(np.prod(dropped_entries_shape))
+        self.context_size = int(np.prod(context_shape))
+        self.rpi = torch.tensor((2 * np.pi) ** (1 / 2), dtype=torch.float32)
+        self.sigma = torch.tensor(0.1, dtype=torch.float32)
+
+        self.net = dense_net(self.context_size, self.output_size, layers=[256] * 3)
+        # self.net = dense_net(self.context_size, self.output_size, layers=[64] * 3)
+
+    def get_param(self, context):
+        context = context.view(-1, self.context_size)
+        return self.net(context)
+
+    def _log_prob(self, inputs, context):
+        mean = self.get_param(context)
+        sigma = self.sigma
         inputs = inputs.view(-1, self.output_size)
         log_prob = -0.5 * ((mean - inputs) / sigma) ** 2 - torch.log(sigma * self.rpi)
         return log_prob.sum(-1)
 
     def _sample(self, num_samples, context):
         # Ignore num_samples as it is always defined by the size of the context
-        mean, sigma = self.get_param(context)
+        mean = self.get_param(context)
         epsilon = torch.normal(mean=torch.zeros_like(mean), std=torch.ones_like(mean) * 0.1)
-        return (mean + torch.exp(sigma) * epsilon).unsqueeze(0)
+        return (mean + self.sigma * epsilon).unsqueeze(0)
+        # return mean.unsqueeze(0)
+
+
+# class ConditionalFixedDecoder(nflows.distributions.Distribution):
+#
+#     def __init__(self, dropped_entries_shape, context_shape, transform_kwargs=None):
+#         """
+#         :param dropped_entries_shape: the shape of the data that needs to be sampled and evaluated (for likelihood)
+#         :param context_shape: the shape of the data that will be passed as context
+#         :return: a flow capable of generating, and evaluating the likelihood, data of shape dropped_entries_shape given
+#                  data of shape context_shape as context.
+#         """
+#         super(ConditionalFixedDecoder, self).__init__()
+#         self.output_size = int(np.prod(dropped_entries_shape))
+#         self.context_size = int(np.prod(context_shape))
+#         self.rpi = torch.tensor((2 * np.pi) ** (1 / 2), dtype=torch.float32)
+#
+#         # self.net = dense_net(self.context_size, self.output_size, layers=[128] * 3)
+#         self.net = dense_net(self.context_size, self.output_size, layers=[64] * 3)
+#
+#     def get_param(self, context):
+#         context = context.view(-1, self.context_size)
+#         return self.net(context)
+#
+#     def _log_prob(self, inputs, context):
+#         mean = self.get_param(context)
+#         inputs = inputs.view(-1, self.output_size)
+#         log_prob = -0.5 * (mean - inputs) ** 2 - torch.log(self.rpi)
+#         return log_prob.sum(-1)
+#
+#     def _sample(self, num_samples, context):
+#         # Ignore num_samples as it is always defined by the size of the context
+#         mean = self.get_param(context)
+#         epsilon = torch.normal(mean=torch.zeros_like(mean), std=torch.ones_like(mean) * 0.1)
+#         # return (mean + torch.exp(sigma) * epsilon).unsqueeze(0)
+#         return mean.unsqueeze(0)
 
 
 class SurVaeCoupling(CouplingTransform):

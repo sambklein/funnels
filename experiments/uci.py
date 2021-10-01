@@ -186,7 +186,9 @@ def make_generator(dropped_entries_shape, context_shape):
         'num_flow_steps': int(args.num_flow_steps / nf_fact)
     }
     if args.cond_gauss:
-        return sur_flows.ConditionalGaussianDecoder(dropped_entries_shape, context_shape)
+        # TODO: Need to stop this overfitting to outperform
+        # return sur_flows.ConditionalGaussianDecoder(dropped_entries_shape, context_shape)
+        return sur_flows.ConditionalFixedDecoder(dropped_entries_shape, context_shape)
     else:
         return sur_flows.make_generator(dropped_entries_shape, context_shape,
                                         transform_func=create_transform, transform_kwargs=transform_kwargs)
