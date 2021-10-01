@@ -15,7 +15,7 @@ from torchvision.utils import make_grid, save_image
 
 # def config():
 # Saving
-from surVAE.models.sur_flows import NByOneConv, SurNSF, surRqNSF, NByOneSlice
+from surVAE.models.sur_flows import NByOneConv, SurNSF, surRqNSF, NByOneSlice, NByOneStandardConv, TanhLayer
 from surVAE.utils.io import save_object
 from surVAE.utils import autils
 import time
@@ -40,13 +40,13 @@ def parse_args():
     parser.add_argument('--model', type=str, default='funnel_conv',
                         help='The dimension of the input data.')
     # TODO: implement slicing surjection for dropping channels as well
-    parser.add_argument('--slice', type=int, default=1,
+    parser.add_argument('--slice', type=int, default=2,
                         help='Use a funnel or slice the tensor?')
     parser.add_argument('--funnel_first', type=int, default=1,
                         help='The dimension of the input data.')
     parser.add_argument('--n_funnels', type=int, default=3,
                         help='The number of funnel layers to apply.')
-    parser.add_argument('--conv_width', type=int, default=4,
+    parser.add_argument('--conv_width', type=int, default=2,
                         help='The width of the convolutional kernel to apply.')
     parser.add_argument('--steps_per_level', type=int, default=7,
                         help='The number of steps per GLOW type level.')
@@ -362,7 +362,7 @@ def funnel_conv(num_channels, hidden_channels):
     # if actnorm:
     #     step_transforms.append(transforms.ActNorm(num_channels))
 
-    if args.slice:
+    if args.slice == 1:
         step_transforms.extend([
             NByOneSlice(num_channels,
                         hidden_features=hidden_channels,
@@ -374,6 +374,18 @@ def funnel_conv(num_channels, hidden_channels):
                         num_bins=spline_params['num_bins'],
                         spline=1)
         ])
+    elif args.slice == 2:
+        step_transforms.extend([
+            NByOneStandardConv(num_channels,
+                               hidden_features=hidden_channels,
+                               width=conv_width,
+                               num_blocks=num_res_blocks,
+                               nstack=steps_per_level,
+                               tail_bound=4.,
+                               num_bins=spline_params['num_bins'],
+                               spline=1)
+        ])
+        step_transforms.extend([TanhLayer()])
     else:
         step_transforms.extend([
             NByOneConv(num_channels,
@@ -437,7 +449,9 @@ def create_transform(flow_type, size_in, size_out):
             if args.funnel_first:
                 if level == 0:
                     all_transforms += [funnel_conv(c, hidden_channels=level_hidden_channels)]
-                    w = int((w - w % conv_width) * (conv_width - 1) / conv_width)
+                    # w = int((w - w % conv_width) * (conv_width - 1) / conv_width)
+                    w = 16
+                    h = 16
 
             image_size = c * h * w
             squeeze_factor = 2
@@ -635,7 +649,9 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device):
                     samples = Preprocess(num_bits).inverse(samples)
 
                 autils.imshow(make_grid(samples, nrow=8), ax)
-                # autils.imshow(make_grid(batch[:64], nrow=8), ax)
+                # n_conv = NByOneStandardConv(3)
+                # autils.imshow(make_grid(n_conv.test_inverse(batch[:64])[0], nrow=8), axs[0])
+                # autils.imshow(make_grid(batch[:64], nrow=8), axs[1])
 
                 ax.set_title('T={:.2f}'.format(temperature))
 
@@ -643,8 +659,10 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device):
             fig.savefig(svo.save_name(f'samples_{step}.png'))
             plt.close(fig)
 
-            # fig, axs = plt.subplots(1, 1, figsize=(4, 4))
-            # autils.imshow(make_grid((batch[:64] / 2 ** num_bits - 0.5) * 2, nrow=8), axs)
+            # fig, axs = plt.subplots(1, 2, figsize=(4, 4))
+            # autils.imshow(make_grid((batch[:64] / 2 ** num_bits - 0.5) * 2, nrow=8), axs[0])
+            # n_conv = NByOneStandardConv(3)
+            # autils.imshow(make_grid((n_conv.test_inverse(batch[:64])[0] / 2 ** num_bits - 0.5) * 2, nrow=8), axs[1])
             # fig.savefig(svo.save_name(f'training_data{step}.png'))
             # fig.tight_layout()
             # plt.close(fig)

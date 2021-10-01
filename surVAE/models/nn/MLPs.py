@@ -27,9 +27,6 @@ class dense_net(nn.Module):
                 function.bias.data.fill_(0.0)
         self.output_activ = output_activ
 
-        if batch_norm and layer_norm:
-            norm_exception()
-
         self.norm = 0
         self.norm_func = nn.LayerNorm
         if batch_norm:

@@ -32,7 +32,7 @@ parser.add_argument('-n', '--outputname', type=str, default='local',
                     help='Set the output name directory')
 
 # data
-parser.add_argument('--dataset_name', type=str, default='bsds300',
+parser.add_argument('--dataset_name', type=str, default='power',
                     choices=['power', 'gas', 'hepmass', 'miniboone', 'bsds300'],
                     help='Name of dataset to use.')
 parser.add_argument('--train_batch_size', type=int, default=64,
@@ -56,7 +56,7 @@ parser.add_argument('--grad_norm_clip_value', type=float, default=5.,
                     help='Value by which to clip norm of gradients.')
 
 # flow details
-parser.add_argument('--base_transform_type', type=str, default='rq-coupling',
+parser.add_argument('--base_transform_type', type=str, default='affine-autoregressive',
                     choices=['affine-coupling', 'quadratic-coupling', 'rq-coupling',
                              'affine-autoregressive', 'quadratic-autoregressive',
                              'rq-autoregressive'],
@@ -83,9 +83,11 @@ parser.add_argument('--apply_unconditional_transform', type=int, default=1,
                     choices=[0, 1],
                     help='Whether to unconditionally transform \'identity\' '
                          'features in coupling layer.')
-parser.add_argument('--funnel', type=int, default=1,
+parser.add_argument('--funnel', type=int, default=4,
                     help='Whether to add a single flow layer or not.')
 parser.add_argument('--funnel_level', type=int, default=2,
+                    help='Whether to add a single flow layer or not.')
+parser.add_argument('--cond_gauss', type=int, default=1,
                     help='Whether to add a single flow layer or not.')
 
 # logging and checkpoints
@@ -183,8 +185,11 @@ def make_generator(dropped_entries_shape, context_shape):
         'num_transform_blocks': int(args.num_transform_blocks),
         'num_flow_steps': int(args.num_flow_steps / nf_fact)
     }
-    return sur_flows.make_generator(dropped_entries_shape, context_shape,
-                                    transform_func=create_transform, transform_kwargs=transform_kwargs)
+    if args.cond_gauss:
+        return sur_flows.ConditionalGaussianDecoder(dropped_entries_shape, context_shape)
+    else:
+        return sur_flows.make_generator(dropped_entries_shape, context_shape,
+                                        transform_func=create_transform, transform_kwargs=transform_kwargs)
 
 
 def create_base_transform(i, features, funnel=1, context_features=None, base_transform_type='rq-coupling',
@@ -308,7 +313,7 @@ def create_base_transform(i, features, funnel=1, context_features=None, base_tra
 
     if funnel:
         # generator_kwargs = {'transform_func': }
-        model = sur_flows.BaseAutoregressiveFunnel(ag_model, ag_params, 1, make_generator)
+        model = sur_flows.BaseAutoregressiveFunnel(ag_model, ag_params, args.funnel, make_generator)
     else:
         model = ag_model(**ag_params)
     return model

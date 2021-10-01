@@ -90,6 +90,143 @@ class IdentityTransform(nflows.transforms.Transform):
         return inputs, torch.zeros(inputs.shape[0]).to(inputs.device)
 
 
+class TanhLayer(nflows.transforms.Transform):
+
+    def forward(self, x, context=None):
+        z = torch.tanh(x)
+        detJ = (1 - torch.tanh(x) ** 2).sum(list(range(1, z.dim())))
+        return z, torch.log(detJ)
+
+    def inverse(self, z, context=None):
+        x = torch.atanh(z)
+        detJ = (-torch.tanh(x) ** 2 * (1 - torch.tanh(x) ** 2)).sum(list(range(1, z.dim())))
+        return x, detJ
+
+
+class NByOneStandardConv(nflows.transforms.Transform):
+    """
+    An N x 1 funnel convolution with the stride fixed to N.
+    """
+
+    def __init__(self, num_channels, width=2, hidden_features=128, num_blocks=2,
+                 num_bins=10, tail_bound=1., tails='linear', nstack=10, spline=1, transform=None, **kwargs):
+        super(NByOneStandardConv, self).__init__()
+
+        self.padding = 0  # (width - 1)
+        self.stride = width
+        self.forward_convolution = nn.Conv2d(num_channels, num_channels, width, stride=self.stride,
+                                             padding=self.padding)
+        self.inverse_convolution = nn.Conv2d(num_channels, num_channels, (width), stride=1, padding=0)
+        self.unfold = nn.Unfold(kernel_size=width, stride=self.stride, padding=self.padding)
+        # TODO: going to need to pass hieght and width here!!
+        self.fold = nn.Fold(output_size=(32, 32), kernel_size=width, stride=self.stride, padding=self.padding)
+        self.gather_z = nn.Unfold(kernel_size=3, stride=1, padding=1)
+        self.n_cond = num_channels * 9
+        # self.n_cond = num_channels
+        self.num_channels = num_channels
+        self.width = width
+        self.n_dropped = num_channels * (width ** 2 - 1)
+
+        self.decoder = self.get_one_dim_flow(num_channels, self.n_cond, width, nstack, hidden_features, num_blocks, tail_bound,
+                                             num_bins, tails, spline=spline)
+        # self.decoder = ConditionalGaussianDecoder(num_channels * (width ** 2 - 1), self.n_cond)
+
+    def get_one_dim_flow(self, channels, ncond, width, nstack, hidden_features, num_blocks, tail_bound, num_bins, tails,
+                         spline=True):
+        inp_dim = channels * (width ** 2 - 1)
+        transform_list = []
+        for i in range(nstack):
+            if spline:
+                transform_list += [
+                    transforms.MaskedPiecewiseRationalQuadraticAutoregressiveTransform(inp_dim, hidden_features,
+                                                                                       num_blocks=num_blocks,
+                                                                                       tail_bound=tail_bound,
+                                                                                       num_bins=num_bins,
+                                                                                       tails=tails,
+                                                                                       context_features=ncond)]
+            else:
+                transform_list += [transforms.MaskedAffineAutoregressiveTransform(inp_dim, 128, num_blocks=4,
+                                                                                  context_features=width - 1)]
+
+            transform_list += [transforms.ReversePermutation(inp_dim)]
+
+        flow_transform = transforms.CompositeTransform(transform_list[:-1])
+        base_dist = nflows.distributions.StandardNormal([inp_dim])
+        return flows.Flow(flow_transform, base_dist)
+
+    def get_J(self):
+        return self.forward_convolution.weight[..., -1, -1]
+
+    def forward(self, inputs, context=None):
+        if inputs.dim() != 4:
+            not_an_image_exception()
+        batch_size, c, h, w = inputs.shape
+        z = self.forward_convolution(inputs)
+        log_detJ = self.get_J().det().abs().log() * np.prod(z.shape[-2:])
+        # TODO: the inverse pass could depend on 'non local' variables as well
+        cond_vars = self.inverse_convolution(z)
+        transformed_blocks = self.unfold(inputs).transpose(-2, -1)
+        mx = torch.ones(transformed_blocks.shape[-1] + 1, dtype=torch.bool)
+        mx[::self.width ** 2] = 0
+        # TODO: make this a property that is defined at initialisation
+        self.mx = mx[1:]
+        dropped_sections = transformed_blocks[..., self.mx]
+        # TODO: check that the reshape is done correctly to have components match up
+        cond_likelihood = self.decoder.log_prob(
+            dropped_sections.view(-1, self.n_dropped),
+            context=self.gather_z(z).transpose(1, 2).reshape(-1, self.n_cond)
+        )
+        # cond_likelihood = self.decoder.log_prob(
+        #     dropped_sections.view(-1, self.n_dropped),
+        #     context=z.transpose(1, 3).reshape(-1, self.num_channels)
+        # )
+        cond_likelihood = cond_likelihood.view(batch_size, -1).sum(-1)
+        likelihood_contribution = log_detJ + cond_likelihood
+        return z, likelihood_contribution
+
+    def make_an_image(self, batch_size, samples, inverse_s=None):
+        samples = samples.view(batch_size, -1, self.n_dropped)
+        x_preform = torch.zeros(*samples.shape[:-1], len(self.mx))
+        x_preform[..., self.mx] = samples
+        if inverse_s is not None:
+            x_preform[..., ~self.mx] = inverse_s
+        image = self.fold(x_preform.transpose(-2, -1))
+        return image
+
+    def inverse(self, z, context=None):
+        if z.dim() != 4:
+            not_an_image_exception()
+        batch_size, c, h, w = z.shape
+        samples, log_prob = self.decoder.sample_and_log_prob(
+            1, context=self.gather_z(z).transpose(1, 2).reshape(-1, self.n_cond)
+        )
+        # TODO: do the samples properly align here as well?
+        dropped_sections = self.make_an_image(batch_size, samples)
+        consts = self.forward_convolution(dropped_sections)
+        inv_J = self.get_J().inverse()
+        transformed_sections = torch.einsum('mn,inkl->imkl', inv_J, z - consts)
+        # TODO: Get the right reshaping automatically
+        x = self.make_an_image(batch_size, samples, transformed_sections.view(batch_size, 3, 256).transpose(1, 2))
+        # TODO: return the right likelihood
+        return x, torch.zeros(batch_size)
+
+    def test_inverse(self, inputs):
+        batch_size, c, h, w = inputs.shape
+        z = self.forward_convolution(inputs)
+        transformed_blocks = self.unfold(inputs).transpose(-2, -1)
+        mx = torch.ones(transformed_blocks.shape[-1] + 1, dtype=torch.bool)
+        mx[::self.width ** 2] = 0
+        # TODO: make this a property that is defined at initialisation
+        self.mx = mx[1:]
+        samples = transformed_blocks[..., self.mx].view(-1, self.n_dropped)
+        dropped_sections = self.make_an_image(batch_size, samples)
+        consts = self.forward_convolution(dropped_sections)
+        inv_J = self.get_J().inverse()
+        transformed_sections = torch.einsum('mn,inkl->imkl', inv_J, z - consts)
+        x = self.make_an_image(batch_size, samples, transformed_sections.view(batch_size, 3, 256).transpose(1, 2))
+        return x
+
+
 class NByOneConv(nflows.transforms.Transform):
     """
     An N x 1 funnel convolution with the stride fixed to N.
@@ -260,12 +397,12 @@ class NByOneSlice(NByOneConv):
         inputs = inputs.permute(1, 0, 2, 3)
         for i, channel in enumerate(inputs):
             channel, mixer_contrib = self.component_mixer[i].forward(channel.reshape(-1, self.width))
-            inputs_to_drop = channel[:, self.ind_to_drop].view(-1, 1)
             z_unsliced, jacobian = self.transform[i].forward(channel)
+            z_to_drop = z_unsliced[:, self.ind_to_drop].view(-1, 1)
             z = z_unsliced[:, self.ind_mask]
             output[i] = z.view(batch_size, h, new_w)
             likelihood_contribution += (
-                    self.one_dim_flow[i].log_prob(inputs_to_drop, context=z) + jacobian
+                    self.one_dim_flow[i].log_prob(z_to_drop, context=z) + jacobian
                     + mixer_contrib
             ).view(batch_size, -1).sum(-1)
         return output.permute(1, 0, 2, 3), likelihood_contribution
@@ -355,6 +492,42 @@ class make_generator(flows.Flow):
     def _sample(self, num_samples, context):
         context = context.view(-1, self.context_size)
         return super(make_generator, self)._sample(num_samples, context).view(-1, *self.dropped_entries_shape)
+
+
+class ConditionalGaussianDecoder(nflows.distributions.Distribution):
+
+    def __init__(self, dropped_entries_shape, context_shape, transform_kwargs=None):
+        """
+        :param dropped_entries_shape: the shape of the data that needs to be sampled and evaluated (for likelihood)
+        :param context_shape: the shape of the data that will be passed as context
+        :return: a flow capable of generating, and evaluating the likelihood, data of shape dropped_entries_shape given
+                 data of shape context_shape as context.
+        """
+        super(ConditionalGaussianDecoder, self).__init__()
+        if not isinstance(transform_kwargs, dict):
+            transform_kwargs = {}
+        self.output_size = int(np.prod(dropped_entries_shape))
+        self.context_size = int(np.prod(context_shape))
+        self.rpi = (2 * np.pi) ** (1 / 2)
+
+        self.net = dense_net(self.context_size, self.output_size * 2, layers=[128] * 3)
+
+    def get_param(self, context):
+        context = context.view(-1, self.context_size)
+        return self.net(context).split(self.output_size, dim=1)
+
+    def _log_prob(self, inputs, context):
+        mean, log_sigma = self.get_param(context)
+        sigma = log_sigma.exp()
+        inputs = inputs.view(-1, self.output_size)
+        log_prob = -0.5 * ((mean - inputs) / sigma) ** 2 - torch.log(sigma * self.rpi)
+        return log_prob.sum(-1)
+
+    def _sample(self, num_samples, context):
+        # Ignore num_samples as it is always defined by the size of the context
+        mean, sigma = self.get_param(context)
+        epsilon = torch.normal(mean=torch.zeros_like(mean), std=torch.ones_like(mean) * 0.1)
+        return (mean + torch.exp(sigma) * epsilon).unsqueeze(0)
 
 
 class SurVaeCoupling(CouplingTransform):
@@ -493,6 +666,7 @@ class BaseCouplingFunnelAlt(nn.Module):
         self.generator = generator_function(dropped_entries_shape, context_shape)
 
     def forward(self, inputs, context=None):
+        # TODO: this has to be done with the real context!! At the moment it is a slice surjection
         faux_output, log_contr = self.coupling_inn.forward(inputs, context=context)
         output = faux_output[:, self.keep_mask, ...]
         likelihood = self.generator.log_prob(faux_output[:, ~self.keep_mask, ...], context=output)
@@ -567,15 +741,17 @@ class BaseAutoregressiveFunnel(nn.Module):
         raise Exception('Need to pass {}')
 
     def forward(self, inputs, context=None):
-        dropped_feature = inputs[..., -1]
-        inputs = inputs[..., :-1]
+        dropped_feature = inputs[..., -self.n_drop:]
+        inputs = inputs[..., :-self.n_drop]
         output, log_contr = self.autoregressive_inn.forward(inputs, context=dropped_feature.view(-1, self.n_drop))
         likelihood = self.generator.log_prob(dropped_feature, context=output)
         return output, log_contr + likelihood
 
     def inverse(self, inputs, context=None):
         input_dropped, likelihood = self.generator.sample_and_log_prob(1, context=inputs)
-        input_dropped = input_dropped.squeeze().unsqueeze(1)
+        input_dropped = input_dropped.squeeze()
+        if input_dropped.dim == 1:
+            input_dropped = input_dropped.unsqueeze(1)
         output_minus, log_contr = self.autoregressive_inn.inverse(inputs, context=input_dropped)
         output = torch.cat((output_minus, input_dropped), -1)
         return output, log_contr + likelihood.squeeze()
