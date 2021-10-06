@@ -20,7 +20,8 @@ setup(
         "torch",
         "tqdm",
         "scipy",
-        "pandas"
+        "pandas",
+        "nflows",
     ],
     dependency_links=[],
 )
