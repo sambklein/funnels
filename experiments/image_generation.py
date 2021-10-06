@@ -15,8 +15,8 @@ from torchvision.utils import make_grid, save_image
 
 # def config():
 # Saving
-from surVAE.models.sur_flows import NByOneConv, SurNSF, surRqNSF, NByOneSlice, NByOneStandardConv, TanhLayer, LeakyRelu, \
-    NByOneInnConv, SurConv
+from surVAE.models.sur_flows import NByOneConv, surRqNSF, NByOneSlice, NByOneStandardConv, TanhLayer, LeakyRelu, \
+    NByOneInnConv
 from surVAE.utils.io import save_object
 from surVAE.utils import autils
 import time
@@ -140,7 +140,7 @@ conv_width = args.conv_width
 # steps_per_level = 10
 steps_per_level = args.steps_per_level
 levels = args.levels
-# TODO: this is set to True for imagenet experiments, but isn't implemented here
+# For imagenet experiments this is set to true, but have removed option for public code, not used for funnel experiments
 multi_scale = args.multi_scale
 actnorm = args.actnorm
 
@@ -226,9 +226,6 @@ class ConvNet(nn.Module):
         return self.net.forward(inputs)
 
 
-# def create_transform_step(num_channels,
-#                           hidden_channels, actnorm, coupling_layer_type, spline_params,
-#                           use_resnet, num_res_blocks, resnet_batchnorm, dropout_prob):
 def create_transform_step(num_channels, hidden_channels, coupling_layer_type='rational_quadratic_spline', size_in=None,
                           size_context=None, context_channels=None):
     if use_resnet:
@@ -356,7 +353,7 @@ class RotateImageTransform(transforms.Transform):
 def funnel_conv(num_channels, hidden_channels, image_width):
     step_transforms = []
 
-    # TODO: the RQ-NSF rquires data to be in [-1, 1]
+    # # TODO: does this help with training funnels?
     # if actnorm:
     #     step_transforms.append(transforms.ActNorm(num_channels))
 
@@ -397,19 +394,6 @@ def funnel_conv(num_channels, hidden_channels, image_width):
                           spline=1,
                           gauss=args.gauss_decoder
                           )
-        ])
-    elif args.slice == 4:
-        step_transforms.extend([
-            SurConv(num_channels, image_width,
-                    hidden_features=hidden_channels,
-                    width=conv_width,
-                    num_blocks=num_res_blocks,
-                    nstack=steps_per_level,
-                    tail_bound=4.,
-                    num_bins=spline_params['num_bins'],
-                    spline=1,
-                    gauss=args.gauss_decoder
-                    )
         ])
     else:
         step_transforms.extend([
@@ -494,109 +478,63 @@ def create_transform(flow_type, size_in, size_out):
             all_transforms = add_glow(size_in)
 
     elif flow_type == 'funnel_conv':
-        if multi_scale:
-            mct = transforms.MultiscaleCompositeTransform(num_transforms=levels)
-            for level, level_hidden_channels in zip(range(levels), hidden_channels):
+        for level, level_hidden_channels in zip(range(levels), hidden_channels):
 
+            if args.funnel_first == 1:
                 if level == 0:
-
-                    image_size = c * h * w
-                    squeeze_factor = 2
-                    squeeze_transform = transforms.SqueezeTransform(factor=squeeze_factor)
-                    c_t, h_t, w_t = squeeze_transform.get_output_shape(c, h, w)
-                    if c_t * h_t * w_t == image_size:
-                        squeeze = 1
-                        c, h, w = c_t, h_t, w_t
-                    else:
-                        print(f'No more squeezing after level {level + n_funnels}')
-                        squeeze = 0
-
                     funnel_model, width = funnel_conv(c, level_hidden_channels, w)
+                    all_transforms += [funnel_model]
+                    # w = int((w - w % conv_width) * (conv_width - 1) / conv_width)
+                    # w = 16
+                    # h = 16
                     w = width
                     h = w
-                    if squeeze:
-                        funnel_model = transforms.CompositeTransform(
-                            [squeeze_transform, transforms.OneByOneConvolution(c), funnel_model]
-                        )
 
-                    size_out = c, h, w
+            image_size = c * h * w
+            squeeze_factor = 2
+            squeeze_transform = transforms.SqueezeTransform(factor=squeeze_factor)
+            c_t, h_t, w_t = squeeze_transform.get_output_shape(c, h, w)
+            if c_t * h_t * w_t == image_size:
+                squeeze = 1
+                c, h, w = c_t, h_t, w_t
+            else:
+                print(f'No more squeezing after level {level + n_funnels}')
+                squeeze = 0
 
-                squeeze_transform = transforms.SqueezeTransform()
-                c, h, w = squeeze_transform.get_output_shape(c, h, w)
-
-                transform_level = transforms.CompositeTransform(
-                    [squeeze_transform]
-                    + [create_transform_step(c, level_hidden_channels) for _ in range(steps_per_level)]
-                    + [transforms.OneByOneConvolution(c)]  # End each level with a linear transformation.
-                )
-
-                new_shape = mct.add_transform(transform_level, (c, h, w))
-                if new_shape:  # If not last layer
-                    c, h, w = new_shape
-
-            mct = transforms.CompositeTransform([funnel_model, mct])
-            c, h, w = size_out
-
-        else:
-            for level, level_hidden_channels in zip(range(levels), hidden_channels):
-
-                if args.funnel_first == 1:
-                    if level == 0:
-                        funnel_model, width = funnel_conv(c, level_hidden_channels, w)
-                        all_transforms += [funnel_model]
-                        # w = int((w - w % conv_width) * (conv_width - 1) / conv_width)
-                        # w = 16
-                        # h = 16
-                        w = width
-                        h = w
-
-                image_size = c * h * w
-                squeeze_factor = 2
-                squeeze_transform = transforms.SqueezeTransform(factor=squeeze_factor)
-                c_t, h_t, w_t = squeeze_transform.get_output_shape(c, h, w)
-                if c_t * h_t * w_t == image_size:
-                    squeeze = 1
-                    c, h, w = c_t, h_t, w_t
+            layer_transform = [create_transform_step(c, level_hidden_channels) for _ in range(steps_per_level)] + [
+                transforms.OneByOneConvolution(c)]
+            if squeeze:
+                if (args.funnel_first == 2) and (level == 0):
+                    # funnel_model, width = funnel_conv(c, level_hidden_channels, w)
+                    # layer_transform = [squeeze_transform, transforms.OneByOneConvolution(c),
+                    #                    funnel_model] + layer_transform
+                    # # w = int((w - w % conv_width) * (conv_width - 1) / conv_width)
+                    # w = width
+                    # h = w
+                    funnel_model, width = funnel_conv(c, level_hidden_channels, w)
+                    funnel_model_2, width = funnel_conv(c, level_hidden_channels, width)
+                    w = width
+                    h = w
+                    layer_transform = [squeeze_transform, transforms.OneByOneConvolution(c),
+                                       funnel_model, transforms.OneByOneConvolution(c),
+                                       funnel_model_2] + layer_transform
                 else:
-                    print(f'No more squeezing after level {level + n_funnels}')
-                    squeeze = 0
+                    layer_transform = [squeeze_transform] + layer_transform
+            all_transforms += [transforms.CompositeTransform(layer_transform)]
 
-                layer_transform = [create_transform_step(c, level_hidden_channels) for _ in range(steps_per_level)] + [
-                    transforms.OneByOneConvolution(c)]
-                if squeeze:
-                    if (args.funnel_first == 2) and (level == 0):
-                        # funnel_model, width = funnel_conv(c, level_hidden_channels, w)
-                        # layer_transform = [squeeze_transform, transforms.OneByOneConvolution(c),
-                        #                    funnel_model] + layer_transform
-                        # # w = int((w - w % conv_width) * (conv_width - 1) / conv_width)
-                        # w = width
-                        # h = w
-                        funnel_model, width = funnel_conv(c, level_hidden_channels, w)
-                        funnel_model_2, width = funnel_conv(c, level_hidden_channels, width)
-                        w = width
-                        h = w
-                        layer_transform = [squeeze_transform, transforms.OneByOneConvolution(c),
-                                           funnel_model, transforms.OneByOneConvolution(c),
-                                           funnel_model_2] + layer_transform
-                    else:
-                        layer_transform = [squeeze_transform] + layer_transform
-                all_transforms += [transforms.CompositeTransform(layer_transform)]
+            if args.funnel_first == 0:
+                if level == 0:
+                    funnel_model, width = funnel_conv(c, level_hidden_channels, w)
+                    all_transforms += [funnel_model]
+                    w = width
+                    h = w
 
-                if args.funnel_first == 0:
-                    if level < 2:
-                    # if level == 0:
-                        funnel_model, width = funnel_conv(c, level_hidden_channels, w)
-                        all_transforms += [funnel_model]
-                        # w = int((w - w % conv_width) * (conv_width - 1) / conv_width)
-                        w = width
-                        h = w
+            print(c, h, w)
 
-                print(c, h, w)
-
-            all_transforms.append(ReshapeTransform(
-                input_shape=(c, h, w),
-                output_shape=(c * h * w,)
-            ))
+        all_transforms.append(ReshapeTransform(
+            input_shape=(c, h, w),
+            output_shape=(c * h * w,)
+        ))
 
     elif flow_type == 'funnel':
         # image_size = c * h * w
