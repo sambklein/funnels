@@ -15,7 +15,8 @@ from torchvision.utils import make_grid, save_image
 
 # def config():
 # Saving
-from surVAE.models.sur_flows import NByOneConv, SurNSF, surRqNSF, NByOneSlice, NByOneStandardConv, TanhLayer
+from surVAE.models.sur_flows import NByOneConv, SurNSF, surRqNSF, NByOneSlice, NByOneStandardConv, TanhLayer, LeakyRelu, \
+    NByOneInnConv, SurConv
 from surVAE.utils.io import save_object
 from surVAE.utils import autils
 import time
@@ -39,10 +40,9 @@ def parse_args():
     # Model set up
     parser.add_argument('--model', type=str, default='funnel_conv',
                         help='The dimension of the input data.')
-    # TODO: implement slicing surjection for dropping channels as well
     parser.add_argument('--slice', type=int, default=2,
                         help='Use a funnel or slice the tensor?')
-    parser.add_argument('--funnel_first', type=int, default=1,
+    parser.add_argument('--funnel_first', type=int, default=0,
                         help='The dimension of the input data.')
     parser.add_argument('--n_funnels', type=int, default=3,
                         help='The number of funnel layers to apply.')
@@ -68,16 +68,6 @@ def parse_args():
                         help='Use batchnorm in resnet layers?')
     parser.add_argument('--dropout_prob', type=float, default=0.2,
                         help='Dropout prob in net for learning flow param.')
-    # parser.add_argument('--spline_params', type=str,
-    #                     default=json.dumps({
-    #                         "apply_unconditional_transform": False,
-    #                         "min_bin_height": 0.001,
-    #                         "min_bin_width": 0.001,
-    #                         "min_derivative": 0.001,
-    #                         "num_bins": 2,
-    #                         "tail_bound": 3.0
-    #                     }),
-    #                     help='Dropout prob in net for learning flow param.')
     parser.add_argument('--apply_unconditional_transform', type=int, default=0,
                         help='Spline conditional transformation?')
     parser.add_argument('--min_bin_height', type=float, default=0.001,
@@ -90,13 +80,19 @@ def parse_args():
                         help='Number of bins in the spline.')
     parser.add_argument('--tail_bound', type=float, default=3.0,
                         help='Spline tail bound.')
+    parser.add_argument('--activation_funnel', type=str, default='none',
+                        help='Spline tail bound.')
+    parser.add_argument('--gauss_decoder', type=int, default=1,
+                        help='Spline tail bound.')
 
     # Dataset and training parameters
-    parser.add_argument('--dataset', type=str, default='cifar-10',
+    parser.add_argument('--dataset', type=str, default='mnist',
                         help='The name of the plane dataset on which to train.')
+    # parser.add_argument('--dataset', type=str, default='imagenet-64-fast',
+    #                     help='The name of the plane dataset on which to train.')
     parser.add_argument('--valid_frac', type=float, default=0.01,
                         help='The fraction of samples to take for validation.')
-    parser.add_argument('--num_bits', type=int, default=5,
+    parser.add_argument('--num_bits', type=int, default=8,
                         help='The number of bits to take in the image.')
     parser.add_argument('--pad', type=int, default=2,
                         help='The amount of padding to apply.')
@@ -144,6 +140,7 @@ conv_width = args.conv_width
 # steps_per_level = 10
 steps_per_level = args.steps_per_level
 levels = args.levels
+# TODO: this is set to True for imagenet experiments, but isn't implemented here
 multi_scale = args.multi_scale
 actnorm = args.actnorm
 
@@ -161,7 +158,8 @@ spline_params = {
 }
 
 # Coupling transform net
-hidden_channels = int(args.hidden_channels / 1.3) if flow_type[:6] == 'funnel' else args.hidden_channels
+# hidden_channels = int(args.hidden_channels / 1.3) if flow_type[:6] == 'funnel' else args.hidden_channels
+hidden_channels = args.hidden_channels
 if not isinstance(hidden_channels, list):
     hidden_channels = [hidden_channels] * levels
 
@@ -355,7 +353,7 @@ class RotateImageTransform(transforms.Transform):
         return inputs.permute(0, 1, 3, 2), torch.zeros(inputs.shape[0]).to(inputs.device)
 
 
-def funnel_conv(num_channels, hidden_channels):
+def funnel_conv(num_channels, hidden_channels, image_width):
     step_transforms = []
 
     # TODO: the RQ-NSF rquires data to be in [-1, 1]
@@ -376,16 +374,43 @@ def funnel_conv(num_channels, hidden_channels):
         ])
     elif args.slice == 2:
         step_transforms.extend([
-            NByOneStandardConv(num_channels,
+            NByOneStandardConv(num_channels, image_width,
                                hidden_features=hidden_channels,
                                width=conv_width,
                                num_blocks=num_res_blocks,
                                nstack=steps_per_level,
                                tail_bound=4.,
                                num_bins=spline_params['num_bins'],
-                               spline=1)
+                               spline=1,
+                               gauss=args.gauss_decoder
+                               )
         ])
-        step_transforms.extend([TanhLayer()])
+    elif args.slice == 3:
+        step_transforms.extend([
+            NByOneInnConv(num_channels, image_width,
+                          hidden_features=hidden_channels,
+                          width=conv_width,
+                          num_blocks=num_res_blocks,
+                          nstack=steps_per_level,
+                          tail_bound=4.,
+                          num_bins=spline_params['num_bins'],
+                          spline=1,
+                          gauss=args.gauss_decoder
+                          )
+        ])
+    elif args.slice == 4:
+        step_transforms.extend([
+            SurConv(num_channels, image_width,
+                    hidden_features=hidden_channels,
+                    width=conv_width,
+                    num_blocks=num_res_blocks,
+                    nstack=steps_per_level,
+                    tail_bound=4.,
+                    num_bins=spline_params['num_bins'],
+                    spline=1,
+                    gauss=args.gauss_decoder
+                    )
+        ])
     else:
         step_transforms.extend([
             NByOneConv(num_channels,
@@ -399,7 +424,12 @@ def funnel_conv(num_channels, hidden_channels):
                        spline=1)
         ])
 
-    return transforms.CompositeTransform(step_transforms)
+    if args.activation_funnel == 'tanh':
+        step_transforms.extend([TanhLayer()])
+    elif args.activation_funnel == 'leaky_relu':
+        step_transforms.extend([LeakyRelu()])
+
+    return transforms.CompositeTransform(step_transforms), step_transforms[0].output_image_size
 
 
 def add_glow(size_in, context_channels=None):
@@ -441,47 +471,132 @@ def create_transform(flow_type, size_in, size_out):
     all_transforms = []
 
     if flow_type == 'glow':
-        all_transforms = add_glow(size_in)
+        if multi_scale:
+            mct = transforms.MultiscaleCompositeTransform(num_transforms=levels)
+            for level, level_hidden_channels in zip(range(levels), hidden_channels):
+
+                squeeze_transform = transforms.SqueezeTransform()
+                c, h, w = squeeze_transform.get_output_shape(c, h, w)
+
+                transform_level = transforms.CompositeTransform(
+                    [squeeze_transform]
+                    + [create_transform_step(c, level_hidden_channels) for _ in range(steps_per_level)]
+                    + [transforms.OneByOneConvolution(c)]  # End each level with a linear transformation.
+                )
+
+                new_shape = mct.add_transform(transform_level, (c, h, w))
+                if new_shape:  # If not last layer
+                    c, h, w = new_shape
+
+            # So the correct shape can be inferred
+            c, h, w = size_in
+        else:
+            all_transforms = add_glow(size_in)
 
     elif flow_type == 'funnel_conv':
-        for level, level_hidden_channels in zip(range(levels), hidden_channels):
+        if multi_scale:
+            mct = transforms.MultiscaleCompositeTransform(num_transforms=levels)
+            for level, level_hidden_channels in zip(range(levels), hidden_channels):
 
-            if args.funnel_first:
                 if level == 0:
-                    all_transforms += [funnel_conv(c, hidden_channels=level_hidden_channels)]
-                    # w = int((w - w % conv_width) * (conv_width - 1) / conv_width)
-                    w = 16
-                    h = 16
 
-            image_size = c * h * w
-            squeeze_factor = 2
-            squeeze_transform = transforms.SqueezeTransform(factor=squeeze_factor)
-            c_t, h_t, w_t = squeeze_transform.get_output_shape(c, h, w)
-            if c_t * h_t * w_t == image_size:
-                squeeze = 1
-                c, h, w = c_t, h_t, w_t
-            else:
-                print(f'No more squeezing after level {level + n_funnels}')
-                squeeze = 0
+                    image_size = c * h * w
+                    squeeze_factor = 2
+                    squeeze_transform = transforms.SqueezeTransform(factor=squeeze_factor)
+                    c_t, h_t, w_t = squeeze_transform.get_output_shape(c, h, w)
+                    if c_t * h_t * w_t == image_size:
+                        squeeze = 1
+                        c, h, w = c_t, h_t, w_t
+                    else:
+                        print(f'No more squeezing after level {level + n_funnels}')
+                        squeeze = 0
 
-            layer_transform = [create_transform_step(c, level_hidden_channels) for _ in range(steps_per_level)] + [
-                transforms.OneByOneConvolution(c)]
-            if squeeze:
-                layer_transform = [squeeze_transform] + layer_transform
-            all_transforms += [transforms.CompositeTransform(layer_transform)]
+                    funnel_model, width = funnel_conv(c, level_hidden_channels, w)
+                    w = width
+                    h = w
+                    if squeeze:
+                        funnel_model = transforms.CompositeTransform(
+                            [squeeze_transform, transforms.OneByOneConvolution(c), funnel_model]
+                        )
 
-            # if level == (levels - 1):
-            if not args.funnel_first:
-                if level == 0:
-                    all_transforms += [funnel_conv(c, hidden_channels=level_hidden_channels)]
-                    w = int((w - w % conv_width) * (conv_width - 1) / conv_width)
+                    size_out = c, h, w
 
-            print(c, h, w)
+                squeeze_transform = transforms.SqueezeTransform()
+                c, h, w = squeeze_transform.get_output_shape(c, h, w)
 
-        all_transforms.append(ReshapeTransform(
-            input_shape=(c, h, w),
-            output_shape=(c * h * w,)
-        ))
+                transform_level = transforms.CompositeTransform(
+                    [squeeze_transform]
+                    + [create_transform_step(c, level_hidden_channels) for _ in range(steps_per_level)]
+                    + [transforms.OneByOneConvolution(c)]  # End each level with a linear transformation.
+                )
+
+                new_shape = mct.add_transform(transform_level, (c, h, w))
+                if new_shape:  # If not last layer
+                    c, h, w = new_shape
+
+            mct = transforms.CompositeTransform([funnel_model, mct])
+            c, h, w = size_out
+
+        else:
+            for level, level_hidden_channels in zip(range(levels), hidden_channels):
+
+                if args.funnel_first == 1:
+                    if level == 0:
+                        funnel_model, width = funnel_conv(c, level_hidden_channels, w)
+                        all_transforms += [funnel_model]
+                        # w = int((w - w % conv_width) * (conv_width - 1) / conv_width)
+                        # w = 16
+                        # h = 16
+                        w = width
+                        h = w
+
+                image_size = c * h * w
+                squeeze_factor = 2
+                squeeze_transform = transforms.SqueezeTransform(factor=squeeze_factor)
+                c_t, h_t, w_t = squeeze_transform.get_output_shape(c, h, w)
+                if c_t * h_t * w_t == image_size:
+                    squeeze = 1
+                    c, h, w = c_t, h_t, w_t
+                else:
+                    print(f'No more squeezing after level {level + n_funnels}')
+                    squeeze = 0
+
+                layer_transform = [create_transform_step(c, level_hidden_channels) for _ in range(steps_per_level)] + [
+                    transforms.OneByOneConvolution(c)]
+                if squeeze:
+                    if (args.funnel_first == 2) and (level == 0):
+                        # funnel_model, width = funnel_conv(c, level_hidden_channels, w)
+                        # layer_transform = [squeeze_transform, transforms.OneByOneConvolution(c),
+                        #                    funnel_model] + layer_transform
+                        # # w = int((w - w % conv_width) * (conv_width - 1) / conv_width)
+                        # w = width
+                        # h = w
+                        funnel_model, width = funnel_conv(c, level_hidden_channels, w)
+                        funnel_model_2, width = funnel_conv(c, level_hidden_channels, width)
+                        w = width
+                        h = w
+                        layer_transform = [squeeze_transform, transforms.OneByOneConvolution(c),
+                                           funnel_model, transforms.OneByOneConvolution(c),
+                                           funnel_model_2] + layer_transform
+                    else:
+                        layer_transform = [squeeze_transform] + layer_transform
+                all_transforms += [transforms.CompositeTransform(layer_transform)]
+
+                if args.funnel_first == 0:
+                    if level < 2:
+                    # if level == 0:
+                        funnel_model, width = funnel_conv(c, level_hidden_channels, w)
+                        all_transforms += [funnel_model]
+                        # w = int((w - w % conv_width) * (conv_width - 1) / conv_width)
+                        w = width
+                        h = w
+
+                print(c, h, w)
+
+            all_transforms.append(ReshapeTransform(
+                input_shape=(c, h, w),
+                output_shape=(c * h * w,)
+            ))
 
     elif flow_type == 'funnel':
         # image_size = c * h * w
@@ -521,7 +636,8 @@ def create_transform(flow_type, size_in, size_out):
     else:
         raise RuntimeError('Unknown type of flow')
 
-    mct = transforms.CompositeTransform(all_transforms)
+    if not multi_scale:
+        mct = transforms.CompositeTransform(all_transforms)
 
     # Inputs to the model in [0, 2 ** num_bits]
     # Only ever going to use glow preprocessing to follow prescription of NSF paper

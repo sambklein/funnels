@@ -48,6 +48,9 @@ def get_top_dir():
     return sv_ims
 
 def get_data_root():
+    # if on_cluster():
+    #     return '/scratch'
+    # else:
     return f'{get_top_dir()}/surVAE/data/downloads'
 
 def get_image_data_root(name):

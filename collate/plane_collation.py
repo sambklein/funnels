@@ -45,10 +45,10 @@ def plot_data(data_names, save_name, bound=1., bins=50):
                 labelleft=False
             )
 
-    title_font = 20
-    axs[0, 0].set_title('Model Encoding', fontsize=title_font)
-    axs[0, 1].set_title('Model Samples', fontsize=title_font)
-    axs[0, 2].set_title('Model Density', fontsize=title_font)
+    title_font = 42
+    axs[0, 0].set_title('Model encoding', fontsize=title_font)
+    axs[0, 1].set_title('Model samples', fontsize=title_font)
+    axs[0, 2].set_title('Model density', fontsize=title_font)
     fig.tight_layout(rect=[0, 0.03, 1, 0.95])
     fig.savefig(f'{save_name}.png')
     plt.close(fig)

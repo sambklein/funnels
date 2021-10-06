@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 from nflows.transforms import splines
 from nflows.transforms.coupling import CouplingTransform
+from nflows.utils import sum_except_batch
 
 from surVAE.models.GLOW import create_flow
 from surVAE.models.flows import get_transform, coupling_spline
@@ -90,17 +91,59 @@ class IdentityTransform(nflows.transforms.Transform):
         return inputs, torch.zeros(inputs.shape[0]).to(inputs.device)
 
 
+def product_except_batch(x):
+    """Take product of all dimensions except the first."""
+    batch_size = x.shape[0]
+    return x.view(batch_size, -1).prod(1)
+
+
 class TanhLayer(nflows.transforms.Transform):
+    """
+    Tanh activation as a survae layer, this assumes each point is independent and so the total log contribution
+    factorises, leaving the final contribution to just be the sum of each individual contribution.
+    """
 
     def forward(self, x, context=None):
         z = torch.tanh(x)
-        detJ = (1 - torch.tanh(x) ** 2).sum(list(range(1, z.dim())))
-        return z, torch.log(detJ)
+        detJ = 1 - torch.tanh(x) ** 2
+        return z, sum_except_batch(detJ.abs().log())
 
     def inverse(self, z, context=None):
         x = torch.atanh(z)
-        detJ = (-torch.tanh(x) ** 2 * (1 - torch.tanh(x) ** 2)).sum(list(range(1, z.dim())))
-        return x, detJ
+        detJ = -torch.tanh(x) ** 2 * (1 - torch.tanh(x) ** 2)
+        return x, sum_except_batch(detJ.abs().log())
+
+
+class LeakyRelu(nflows.transforms.Transform):
+    """
+    LeakyRelu activation as a survae layer, this assumes each point is independent and so the total log contribution
+    factorises, leaving the final contribution to just be the sum of each individual contribution.
+    """
+
+    def __init__(self, learnable=False):
+        super(LeakyRelu, self).__init__()
+        if learnable:
+            self.neg_slope = nn.Parameter(torch.randn(1) ** (1 / 2))
+        else:
+            self.register_buffer('neg_slope', torch.tensor((0.01) ** (1 / 2), dtype=torch.float32))
+        self.register_buffer('epsilon', torch.tensor(1e-6, dtype=torch.float32))
+
+    def get_func(self, x):
+        leaky_relu = torch.ones_like(x)
+        leaky_relu[x < 0] = (self.neg_slope + self.epsilon) ** 2
+        return leaky_relu
+
+    def forward(self, x, context=None):
+        leaky_relu = self.get_func(x)
+        z = x * leaky_relu
+        detJ = leaky_relu
+        return z, sum_except_batch(detJ.abs().log())
+
+    def inverse(self, z, context=None):
+        leaky_relu = self.get_func(z)
+        x = z / leaky_relu
+        detJ = 1 / leaky_relu
+        return x, sum_except_batch(detJ.abs().log())
 
 
 class NByOneStandardConv(nflows.transforms.Transform):
@@ -108,33 +151,43 @@ class NByOneStandardConv(nflows.transforms.Transform):
     An N x 1 funnel convolution with the stride fixed to N.
     """
 
-    def __init__(self, num_channels, width=2, hidden_features=128, num_blocks=2,
-                 num_bins=10, tail_bound=1., tails='linear', nstack=10, spline=1, transform=None, **kwargs):
+    def __init__(self, num_channels, image_width, width=2, hidden_features=128, num_blocks=2,
+                 num_bins=10, tail_bound=1., tails='linear', nstack=10, spline=1, transform=None, gauss=True,
+                 **kwargs):
         super(NByOneStandardConv, self).__init__()
 
         self.padding = 0  # (width - 1)
         self.stride = width
         self.forward_convolution = nn.Conv2d(num_channels, num_channels, width, stride=self.stride,
                                              padding=self.padding)
-        self.inverse_convolution = nn.Conv2d(num_channels, num_channels, (width), stride=1, padding=0)
         self.unfold = nn.Unfold(kernel_size=width, stride=self.stride, padding=self.padding)
-        # TODO: going to need to pass hieght and width here!!
-        self.fold = nn.Fold(output_size=(32, 32), kernel_size=width, stride=self.stride, padding=self.padding)
+        self.fold = nn.Fold(output_size=(image_width, image_width), kernel_size=width, stride=self.stride,
+                            padding=self.padding)
+        # k_infer = 5
+        # self.gather_z = nn.Unfold(kernel_size=k_infer, stride=1, padding=2)
+        k_infer = 3
         self.gather_z = nn.Unfold(kernel_size=3, stride=1, padding=1)
-        self.n_cond = num_channels * 9
+        self.n_cond = num_channels * k_infer ** 2
         # self.n_cond = num_channels
         self.num_channels = num_channels
         self.width = width
         self.n_dropped = num_channels * (width ** 2 - 1)
+        self.output_image_size = int(image_width / 2)
 
-        # self.decoder = self.get_one_dim_flow(num_channels, self.n_cond, width, nstack, hidden_features, num_blocks, tail_bound,
-        #                                      num_bins, tails, spline=spline)
-        # self.decoder = ConditionalGaussianDecoder(num_channels * (width ** 2 - 1), self.n_cond)
-        self.decoder = ConditionalFixedDecoder(num_channels * (width ** 2 - 1), self.n_cond)
+        mx = torch.ones(self.width ** 2 * self.num_channels + 1, dtype=torch.bool)
+        mx[::self.width ** 2] = 0
+        self.mx = mx[1:]
 
-    def get_one_dim_flow(self, channels, ncond, width, nstack, hidden_features, num_blocks, tail_bound, num_bins, tails,
+        if gauss:
+            self.decoder = ConditionalGaussianDecoder(num_channels * (width ** 2 - 1), self.n_cond)
+            # self.decoder = ConditionalFixedDecoder(num_channels * (width ** 2 - 1), self.n_cond)
+        else:
+            self.decoder = self.get_one_dim_flow(num_channels * (width ** 2 - 1), self.n_cond, width, nstack,
+                                                 hidden_features, num_blocks, tail_bound,
+                                                 num_bins, tails, spline=spline)
+
+    def get_one_dim_flow(self, inp_dim, ncond, width, nstack, hidden_features, num_blocks, tail_bound, num_bins, tails,
                          spline=True):
-        inp_dim = channels * (width ** 2 - 1)
         transform_list = []
         for i in range(nstack):
             if spline:
@@ -164,13 +217,7 @@ class NByOneStandardConv(nflows.transforms.Transform):
         batch_size, c, h, w = inputs.shape
         z = self.forward_convolution(inputs)
         log_detJ = self.get_J().det().abs().log() * np.prod(z.shape[-2:])
-        # TODO: the inverse pass could depend on 'non local' variables as well
-        cond_vars = self.inverse_convolution(z)
         transformed_blocks = self.unfold(inputs).transpose(-2, -1)
-        mx = torch.ones(transformed_blocks.shape[-1] + 1, dtype=torch.bool)
-        mx[::self.width ** 2] = 0
-        # TODO: make this a property that is defined at initialisation
-        self.mx = mx[1:]
         dropped_sections = transformed_blocks[..., self.mx]
         cond_likelihood = self.decoder.log_prob(
             dropped_sections.view(-1, self.n_dropped),
@@ -196,13 +243,13 @@ class NByOneStandardConv(nflows.transforms.Transform):
         samples, log_prob = self.decoder.sample_and_log_prob(
             1, context=self.gather_z(z).transpose(1, 2).reshape(-1, self.n_cond)
         )
-        # TODO: do the samples properly align here as well?
         dropped_sections = self.make_an_image(batch_size, samples)
         consts = self.forward_convolution(dropped_sections)
         inv_J = self.get_J().inverse()
         transformed_sections = torch.einsum('mn,inkl->imkl', inv_J, z - consts)
-        # TODO: Get the right reshaping automatically
-        x = self.make_an_image(batch_size, samples, transformed_sections.view(batch_size, 3, 256).transpose(1, 2))
+        x = self.make_an_image(batch_size, samples,
+                               transformed_sections.view(batch_size, self.num_channels,
+                                                         int(self.output_image_size ** 2)).transpose(1, 2))
         # TODO: return the right likelihood
         return x, torch.zeros(batch_size)
 
@@ -210,10 +257,6 @@ class NByOneStandardConv(nflows.transforms.Transform):
         batch_size, c, h, w = inputs.shape
         z = self.forward_convolution(inputs)
         transformed_blocks = self.unfold(inputs).transpose(-2, -1)
-        mx = torch.ones(transformed_blocks.shape[-1] + 1, dtype=torch.bool)
-        mx[::self.width ** 2] = 0
-        # TODO: make this a property that is defined at initialisation
-        self.mx = mx[1:]
         samples = transformed_blocks[..., self.mx].view(-1, self.n_dropped)
         dropped_sections = self.make_an_image(batch_size, samples)
         consts = self.forward_convolution(dropped_sections)
@@ -221,6 +264,323 @@ class NByOneStandardConv(nflows.transforms.Transform):
         transformed_sections = torch.einsum('mn,inkl->imkl', inv_J, z - consts)
         x = self.make_an_image(batch_size, samples, transformed_sections.view(batch_size, 3, 256).transpose(1, 2))
         return x
+
+
+class SurConv(nflows.transforms.Transform):
+    """
+    An N x 1 funnel convolution with the stride fixed to N.
+    """
+
+    def __init__(self, num_channels, image_width, width=2, stride=1, hidden_features=128, num_blocks=2,
+                 num_bins=10, tail_bound=1., tails='linear', nstack=10, spline=1, transform=None, gauss=True,
+                 **kwargs):
+        super(SurConv, self).__init__()
+
+        self.padding = 0
+        self.stride = stride
+        self.forward_convolution = nn.Conv2d(num_channels, num_channels, width, stride=self.stride,
+                                             padding=self.padding)
+        self.unfold = nn.Unfold(kernel_size=width, stride=width, padding=0)
+        self.fold = nn.Fold(output_size=(image_width, image_width), kernel_size=width, stride=width, padding=0)
+        # k_infer = 5
+        # self.gather_z = nn.Unfold(kernel_size=k_infer, stride=1, padding=2)
+        k_infer = 3
+        self.gather_z = nn.Unfold(kernel_size=3, stride=width, padding=1)
+        self.n_cond = num_channels * k_infer ** 2
+        # self.n_cond = num_channels
+        self.num_channels = num_channels
+        self.width = width
+        self.n_dropped = num_channels * (width ** 2 - 1)
+        # TODO: infer this
+        self.output_image_size = image_width - 1
+
+        mx = torch.ones(self.width ** 2 * self.num_channels + 1, dtype=torch.bool)
+        mx[::self.width ** 2] = 0
+        self.mx = mx[1:]
+
+        if gauss:
+            self.decoder = ConditionalGaussianDecoder(num_channels * (width ** 2), self.n_cond)
+            # self.decoder = ConditionalFixedDecoder(num_channels * (width ** 2 - 1), self.n_cond)
+        else:
+            self.decoder = self.get_one_dim_flow(num_channels * (width ** 2), self.n_cond, width, nstack,
+                                                 hidden_features, num_blocks, tail_bound,
+                                                 num_bins, tails, spline=spline)
+
+    def get_one_dim_flow(self, inp_dim, ncond, width, nstack, hidden_features, num_blocks, tail_bound, num_bins, tails,
+                         spline=True):
+        transform_list = []
+        for i in range(nstack):
+            if spline:
+                transform_list += [
+                    transforms.MaskedPiecewiseRationalQuadraticAutoregressiveTransform(inp_dim, hidden_features,
+                                                                                       num_blocks=num_blocks,
+                                                                                       tail_bound=tail_bound,
+                                                                                       num_bins=num_bins,
+                                                                                       tails=tails,
+                                                                                       context_features=ncond)]
+            else:
+                transform_list += [transforms.MaskedAffineAutoregressiveTransform(inp_dim, 128, num_blocks=4,
+                                                                                  context_features=width - 1)]
+
+            transform_list += [transforms.ReversePermutation(inp_dim)]
+
+        flow_transform = transforms.CompositeTransform(transform_list[:-1])
+        base_dist = nflows.distributions.StandardNormal([inp_dim])
+        return flows.Flow(flow_transform, base_dist)
+
+    def get_J(self):
+        return self.forward_convolution.weight[..., -1, -1]
+
+    def forward(self, inputs, context=None):
+        if inputs.dim() != 4:
+            not_an_image_exception()
+        batch_size, c, h, w = inputs.shape
+        z = self.forward_convolution(inputs)
+        log_detJ = self.get_J().det().abs().log() * np.prod(z.shape[-2:])
+        dropped_sections = self.unfold(inputs).transpose(-2, -1)
+        cond_likelihood = self.decoder.log_prob(
+            dropped_sections.reshape(-1, self.n_dropped + self.num_channels),
+            context=self.gather_z(z).transpose(1, 2).reshape(-1, self.n_cond)
+        )
+        cond_likelihood = cond_likelihood.view(batch_size, -1).sum(-1)
+        likelihood_contribution = log_detJ + cond_likelihood
+        return z, likelihood_contribution
+
+    def make_an_image(self, batch_size, samples, inverse_s=None):
+        x_preform = samples.view(batch_size, -1, self.width ** 2 * self.num_channels)
+        image = self.fold(x_preform.transpose(-2, -1))
+        return image
+
+    def inverse(self, z, context=None):
+        if z.dim() != 4:
+            not_an_image_exception()
+        batch_size, c, h, w = z.shape
+        reduc_samples = self.gather_z(z).transpose(1, 2).reshape(-1, self.n_cond)
+        samples, log_prob = self.decoder.sample_and_log_prob(
+            1, context=reduc_samples
+        )
+        dropped_sections = self.make_an_image(batch_size, samples)
+        consts = self.forward_convolution(dropped_sections)
+        inv_J = self.get_J().inverse()
+        transformed_sections = torch.einsum('mn,inkl->imkl', inv_J, z - consts)
+        x = self.make_an_image(batch_size, samples,
+                               transformed_sections.view(batch_size, self.num_channels,
+                                                         int(self.output_image_size ** 2)).transpose(1, 2))
+        # TODO: return the right likelihood
+        return x, torch.zeros(batch_size)
+
+    def test_inverse(self, inputs):
+        batch_size, c, h, w = inputs.shape
+        z = self.forward_convolution(inputs)
+        transformed_blocks = self.unfold(inputs).transpose(-2, -1)
+        samples = transformed_blocks[..., self.mx].view(-1, self.n_dropped)
+        dropped_sections = self.make_an_image(batch_size, samples)
+        consts = self.forward_convolution(dropped_sections)
+        inv_J = self.get_J().inverse()
+        transformed_sections = torch.einsum('mn,inkl->imkl', inv_J, z - consts)
+        x = self.make_an_image(batch_size, samples, transformed_sections.view(batch_size, 3, 256).transpose(1, 2))
+        return x
+
+
+class NByOneInnConv(nflows.transforms.Transform):
+    """
+    An N x 1 funnel convolution with the stride fixed to N.
+    """
+
+    def __init__(self, num_channels, image_width, width=2, hidden_features=128, num_blocks=2,
+                 num_bins=10, tail_bound=1., tails='linear', nstack=10, spline=1, transform=None, gauss=True,
+                 **kwargs):
+        super(NByOneInnConv, self).__init__()
+
+        self.padding = 0  # (width - 1)
+        self.stride = width
+        self.output_image_size = int(image_width / 2)
+        self.conv_op = self.get_one_dim_flow(num_channels, num_channels * (width ** 2 - 1), width,
+                                             nstack, hidden_features, num_blocks, tail_bound,
+                                             num_bins, tails, spline=spline)
+        self.unfold = nn.Unfold(kernel_size=width, stride=self.stride, padding=self.padding)
+        self.fold = nn.Fold(output_size=(image_width, image_width), kernel_size=width, stride=self.stride,
+                            padding=self.padding)
+        ks = int(image_width / 2)
+        self.fold_transform = nn.Fold(output_size=(ks, ks), kernel_size=1, stride=1, padding=0)
+        # k_infer = 5
+        # self.gather_z = nn.Unfold(kernel_size=k_infer, stride=1, padding=2)
+        k_infer = 3
+        self.gather_z = nn.Unfold(kernel_size=3, stride=1, padding=1)
+        self.n_cond = num_channels * k_infer ** 2
+        # self.n_cond = num_channels
+        self.num_channels = num_channels
+        self.width = width
+        self.n_dropped = num_channels * (width ** 2 - 1)
+
+        mx = torch.ones(self.width ** 2 * self.num_channels + 1, dtype=torch.bool)
+        mx[::self.width ** 2] = 0
+        self.mx = mx[1:]
+
+        if gauss:
+            self.decoder = ConditionalGaussianDecoder(num_channels * (width ** 2 - 1), self.n_cond)
+            # self.decoder = ConditionalFixedDecoder(num_channels * (width ** 2 - 1), self.n_cond)
+        else:
+            self.decoder = self.get_one_dim_flow(num_channels * (width ** 2 - 1), self.n_cond, width, nstack,
+                                                 hidden_features, num_blocks, tail_bound,
+                                                 num_bins, tails, spline=spline)
+
+    def get_one_dim_flow(self, inp_dim, ncond, width, nstack, hidden_features, num_blocks, tail_bound, num_bins, tails,
+                         spline=True):
+        transform_list = []
+        for i in range(nstack):
+            if spline:
+                transform_list += [
+                    transforms.MaskedPiecewiseRationalQuadraticAutoregressiveTransform(inp_dim, hidden_features,
+                                                                                       num_blocks=num_blocks,
+                                                                                       tail_bound=tail_bound,
+                                                                                       num_bins=num_bins,
+                                                                                       tails=tails,
+                                                                                       context_features=ncond)]
+            else:
+                transform_list += [transforms.MaskedAffineAutoregressiveTransform(inp_dim, 128, num_blocks=4,
+                                                                                  context_features=width - 1)]
+
+            transform_list += [transforms.ReversePermutation(inp_dim)]
+
+        flow_transform = transforms.CompositeTransform(transform_list[:-1])
+        base_dist = nflows.distributions.StandardNormal([inp_dim])
+        return flows.Flow(flow_transform, base_dist)
+
+    def get_J(self):
+        return self.forward_convolution.weight[..., -1, -1]
+
+    def convolution(self, inputs, direction='forward'):
+        transformed_blocks = self.unfold(inputs).transpose(-2, -1)
+        dropped_sections = transformed_blocks[..., self.mx].view(-1, self.n_dropped)
+        transformed_sections = transformed_blocks[..., ~self.mx].view(-1, self.num_channels)
+
+        transform, detJ = {'forward': self.conv_op._transform.forward, 'inverse': self.conv_op._transform.inverse}[
+            direction](transformed_sections, context=dropped_sections)
+
+        reshaped = transform.view(*transformed_blocks.shape[:-1], self.num_channels).transpose(-2, -1)
+        return self.fold_transform(reshaped), detJ.view(transformed_blocks.shape[0], -1).sum(-1)
+
+    def forward(self, inputs, context=None):
+        if inputs.dim() != 4:
+            not_an_image_exception()
+        batch_size, c, h, w = inputs.shape
+        z, log_detJ = self.convolution(inputs, 'forward')
+        transformed_blocks = self.unfold(inputs).transpose(-2, -1)
+        dropped_sections = transformed_blocks[..., self.mx]
+        cond_likelihood = self.decoder.log_prob(
+            dropped_sections.view(-1, self.n_dropped),
+            context=self.gather_z(z).transpose(1, 2).reshape(-1, self.n_cond)
+        )
+        cond_likelihood = cond_likelihood.view(batch_size, -1).sum(-1)
+        likelihood_contribution = log_detJ + cond_likelihood
+        return z, likelihood_contribution
+
+    def make_an_image(self, batch_size, samples, inverse_s=None):
+        samples = samples.view(batch_size, -1, self.n_dropped)
+        x_preform = torch.zeros(*samples.shape[:-1], len(self.mx))
+        x_preform[..., self.mx] = samples
+        if inverse_s is not None:
+            x_preform[..., ~self.mx] = inverse_s
+        image = self.fold(x_preform.transpose(-2, -1))
+        return image
+
+    def inverse(self, z, context=None):
+        if z.dim() != 4:
+            not_an_image_exception()
+        batch_size, c, h, w = z.shape
+        samples, log_prob = self.decoder.sample_and_log_prob(
+            1, context=self.gather_z(z).transpose(1, 2).reshape(-1, self.n_cond)
+        )
+        to_invert = self.make_an_image(batch_size, samples,
+                                       z.view(batch_size, 3, int(self.output_image_size ** 2)).transpose(1, 2))
+        almost_x, log_detJ = self.convolution(to_invert, 'inverse')
+        # x = self.make_an_image(batch_size, samples,
+        #                        almost_x.view(batch_size, 3, int(self.output_image_size ** 2)).transpose(1, 2))
+        x = self.make_an_image(batch_size, samples,
+                               almost_x.view(batch_size, 3, -1).transpose(1, 2))
+        return x, torch.zeros(batch_size)
+
+
+# class NByOneStandardConv(nflows.transforms.Transform):
+#     """
+#     An N x 1 funnel convolution with the stride fixed to N.
+#     """
+#
+#     def __init__(self, num_channels, width=2, hidden_features=128, num_blocks=2,
+#                  num_bins=10, tail_bound=1., tails='linear', nstack=10, spline=1, transform=None, **kwargs):
+#         super(NByOneStandardConv, self).__init__()
+#
+#         self.padding = 0  # (width - 1)
+#         self.stride = width
+#         self.forward_convolution = nn.Conv2d(num_channels, num_channels, width, stride=self.stride,
+#                                              padding=self.padding)
+#         self.inverse_convolution = nn.Conv2d(num_channels, num_channels, (width), stride=1, padding=0)
+#         self.unfold = nn.Unfold(kernel_size=width, stride=self.stride, padding=self.padding)
+#         # TODO: going to need to pass hieght and width here!!
+#         self.fold = nn.Fold(output_size=(32, 32), kernel_size=width, stride=self.stride, padding=self.padding)
+#         self.gather_z = nn.Unfold(kernel_size=1, stride=1, padding=0)
+#         self.n_cond = num_channels * 9
+#         # self.n_cond = num_channels
+#         self.num_channels = num_channels
+#         self.width = width
+#         self.n_dropped = num_channels * (width ** 2 - 1)
+#
+#         # self.decoder = self.get_one_dim_flow(num_channels, self.n_cond, width, nstack, hidden_features, num_blocks, tail_bound,
+#         #                                      num_bins, tails, spline=spline)
+#         self.decoder = ConditionalGaussianDecoder(num_channels * (width ** 2 - 1), self.n_cond)
+#         # self.decoder = ConditionalFixedDecoder(num_channels * (width ** 2 - 1), self.n_cond)
+#
+#     def get_J(self):
+#         return self.forward_convolution.weight[..., -1, -1]
+#
+#     def forward(self, inputs, context=None):
+#         if inputs.dim() != 4:
+#             not_an_image_exception()
+#         batch_size, c, h, w = inputs.shape
+#         z = self.forward_convolution(inputs)
+#         log_detJ = self.get_J().det().abs().log() * np.prod(z.shape[-2:])
+#         # TODO: the inverse pass could depend on 'non local' variables as well
+#         cond_vars = self.inverse_convolution(z)
+#         transformed_blocks = self.unfold(inputs).transpose(-2, -1)
+#         mx = torch.ones(transformed_blocks.shape[-1] + 1, dtype=torch.bool)
+#         mx[::self.width ** 2] = 0
+#         # TODO: make this a property that is defined at initialisation
+#         self.mx = mx[1:]
+#         dropped_sections = transformed_blocks[..., self.mx]
+#         cond_likelihood = self.decoder.log_prob(
+#             dropped_sections.view(-1, self.n_dropped),
+#             context=self.gather_z(z).transpose(1, 2).reshape(-1, self.n_cond)
+#         )
+#         cond_likelihood = cond_likelihood.view(batch_size, -1).sum(-1)
+#         likelihood_contribution = log_detJ + cond_likelihood
+#         return z, likelihood_contribution
+#
+#     def make_an_image(self, batch_size, samples, inverse_s=None):
+#         samples = samples.view(batch_size, -1, self.n_dropped)
+#         x_preform = torch.zeros(*samples.shape[:-1], len(self.mx))
+#         x_preform[..., self.mx] = samples
+#         if inverse_s is not None:
+#             x_preform[..., ~self.mx] = inverse_s
+#         image = self.fold(x_preform.transpose(-2, -1))
+#         return image
+#
+#     def inverse(self, z, context=None):
+#         if z.dim() != 4:
+#             not_an_image_exception()
+#         batch_size, c, h, w = z.shape
+#         samples, log_prob = self.decoder.sample_and_log_prob(
+#             1, context=self.gather_z(z).transpose(1, 2).reshape(-1, self.n_cond)
+#         )
+#         # TODO: do the samples properly align here as well?
+#         dropped_sections = self.make_an_image(batch_size, samples)
+#         consts = self.forward_convolution(dropped_sections)
+#         inv_J = self.get_J().inverse()
+#         transformed_sections = torch.einsum('mn,inkl->imkl', inv_J, z - consts)
+#         # TODO: Get the right reshaping automatically
+#         x = self.make_an_image(batch_size, samples, transformed_sections.view(batch_size, 3, 256).transpose(1, 2))
+#         # TODO: return the right likelihood
+#         return x, torch.zeros(batch_size)
 
 
 class NByOneConv(nflows.transforms.Transform):

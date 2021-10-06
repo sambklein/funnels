@@ -12,3 +12,5 @@ from .base import (
 from .celeba import CelebA, CelebAHQ, CelebAHQ64Fast
 
 from .cifar10 import CIFAR10Fast
+
+from .imagenet import ImageNet32, ImageNet64, ImageNet64Fast
