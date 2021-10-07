@@ -9,7 +9,7 @@
   "hidden_channels": 96,
   "learning_rate": 0.0005,
   "levels": 4,
-  "multi_scale": true,
+  "multi_scale": false,
   "num_bits": 5,
   "num_res_blocks": 3,
   "num_steps": 100000,

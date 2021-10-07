@@ -354,9 +354,10 @@ def funnel_conv(num_channels, hidden_channels, image_width):
     step_transforms = []
 
     # # TODO: does this help with training funnels?
-    # if actnorm:
-    #     step_transforms.append(transforms.ActNorm(num_channels))
-
+    if actnorm:
+        step_transforms.append(transforms.ActNorm(num_channels))
+    indx = 1
+    # indx = 0
     if args.slice == 1:
         step_transforms.extend([
             NByOneSlice(num_channels,
@@ -413,7 +414,7 @@ def funnel_conv(num_channels, hidden_channels, image_width):
     elif args.activation_funnel == 'leaky_relu':
         step_transforms.extend([LeakyRelu()])
 
-    return transforms.CompositeTransform(step_transforms), step_transforms[0].output_image_size
+    return transforms.CompositeTransform(step_transforms), step_transforms[indx].output_image_size
 
 
 def add_glow(size_in, context_channels=None):
@@ -524,6 +525,7 @@ def create_transform(flow_type, size_in, size_out):
 
             if args.funnel_first == 0:
                 if level == 0:
+                # if level < 2:
                     funnel_model, width = funnel_conv(c, level_hidden_channels, w)
                     all_transforms += [funnel_model]
                     w = width

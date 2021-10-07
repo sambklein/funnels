@@ -22,6 +22,52 @@ def convolving_not_possible():
     raise RuntimeError('Cannot properly reshape images of this size for this convolution.')
 
 
+class InferenceMLP(nflows.transforms.Transform):
+    def __init__(self, in_nodes, out_nodes, type='lu'):
+        super(InferenceMLP, self).__init__()
+        # TODO: implement 'lu' arg
+        # TODO: provide exceptions for different argument sizes
+        self.perm = transforms.RandomPermutation(features=in_nodes)
+        self.F = transforms.LULinear(out_nodes)
+        self.V = nn.Linear(in_nodes - out_nodes, out_nodes)
+        self.decoder = ConditionalGaussianDecoder(in_nodes - out_nodes, out_nodes)
+        self.in_nodes = in_nodes
+        self.out_nodes = out_nodes
+
+    def forward(self, x, context=None):
+        # x, l_rand = self.perm(x, context=context)
+        xPlus = x[:, :self.out_nodes]
+        lu_part, likelihood_contr = self.F(xPlus, context=context)
+        x_minus = x[:, self.out_nodes:]
+        cond_part = self.V(x_minus)
+        output = lu_part + cond_part
+        likelihood_cond = self.decoder.log_prob(x_minus, context=output)
+        return output, likelihood_contr + likelihood_cond
+
+    def inverse(self, z, context=None):
+        samples, log_prob = self.decoder.sample_and_log_prob(1, context=z)
+        cond_part = self.V(samples.squeeze())
+        x, like = self.F.inverse(z - cond_part, context=context)
+        return torch.cat((x, samples.squeeze()), 1), log_prob.view(-1) + like
+
+
+class generativeMLP(nflows.transforms.Transform):
+    """
+    At the moment this is just a generative slice surjection.
+    """
+    def __init__(self, in_nodes, out_nodes, type='lu'):
+        super(generativeMLP, self).__init__()
+        self.in_nodes = in_nodes
+        self.decoder = ConditionalGaussianDecoder(out_nodes - in_nodes, in_nodes)
+
+    def forward(self, x, context=None):
+        samples, likelihood_contr = self.decoder.sample_and_log_prob(1, context=x)
+        return torch.cat((x, samples.squeeze()), 1), -likelihood_contr.view(-1)
+
+    def inverse(self, z, context=None):
+        return z[:, :self.in_nodes], torch.zeros(z.shape[0])
+
+
 class get_net(nn.Module):
 
     def __init__(self, features, hidden_features, num_blocks, output_multiplier):
@@ -264,6 +310,7 @@ class NByOneStandardConv(nflows.transforms.Transform):
         transformed_sections = torch.einsum('mn,inkl->imkl', inv_J, z - consts)
         x = self.make_an_image(batch_size, samples, transformed_sections.view(batch_size, 3, 256).transpose(1, 2))
         return x
+
 
 #
 # class SurConv(nflows.transforms.Transform):

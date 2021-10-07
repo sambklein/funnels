@@ -21,6 +21,7 @@ import surVAE.utils as utils
 from nflows import distributions, flows, transforms
 
 from surVAE.models import sur_flows
+from surVAE.models.flows import get_transform
 from surVAE.utils.io import get_timestamp, on_cluster, get_log_root, get_checkpoint_root, save_object
 
 parser = argparse.ArgumentParser()
@@ -32,7 +33,7 @@ parser.add_argument('-n', '--outputname', type=str, default='local',
                     help='Set the output name directory')
 
 # data
-parser.add_argument('--dataset_name', type=str, default='power',
+parser.add_argument('--dataset_name', type=str, default='bsds300',
                     choices=['power', 'gas', 'hepmass', 'miniboone', 'bsds300'],
                     help='Name of dataset to use.')
 parser.add_argument('--train_batch_size', type=int, default=64,
@@ -187,8 +188,8 @@ def make_generator(dropped_entries_shape, context_shape):
     }
     if args.cond_gauss:
         # TODO: Need to stop this overfitting to outperform
-        # return sur_flows.ConditionalGaussianDecoder(dropped_entries_shape, context_shape)
-        return sur_flows.ConditionalFixedDecoder(dropped_entries_shape, context_shape)
+        return sur_flows.ConditionalGaussianDecoder(dropped_entries_shape, context_shape)
+        # return sur_flows.ConditionalFixedDecoder(dropped_entries_shape, context_shape)
     else:
         return sur_flows.make_generator(dropped_entries_shape, context_shape,
                                         transform_func=create_transform, transform_kwargs=transform_kwargs)
@@ -349,14 +350,37 @@ def create_transform(inp_dim, context_features=None, funnel=False, base_transfor
     return transform
 
 
+def createMLP(features):
+    transform_list = [
+        sur_flows.InferenceMLP(features, 40),
+        sur_flows.LeakyRelu(),
+        sur_flows.InferenceMLP(40, 30),
+        sur_flows.LeakyRelu(),
+        sur_flows.InferenceMLP(30, 20),
+        get_transform(inp_dim=20, nodes=256, nstack=4)
+    ]
+    # transform_list = [
+    #     # sur_flows.InferenceMLP(features, 40),
+    #     sur_flows.generativeMLP(features, 128),
+    #     sur_flows.LeakyRelu(),
+    #     sur_flows.InferenceMLP(128, 64),
+    #     sur_flows.LeakyRelu(),
+    #     sur_flows.InferenceMLP(64, 20),
+    #     get_transform(inp_dim=20, nodes=256, nstack=4)
+    # ]
+    return transforms.CompositeTransform(transform_list)
+
+
 # create model
 if args.funnel >= 0:
     distribution = distributions.StandardNormal((int(features - args.funnel),))
 elif args.funnel == -1:
     distribution = distributions.StandardNormal((2,))
-transform = create_transform(inp_dim=features, funnel=args.funnel, base_transform_type=args.base_transform_type,
-                             hidden_features=args.hidden_features, num_transform_blocks=args.num_transform_blocks,
-                             num_flow_steps=args.num_flow_steps)
+# transform = create_transform(inp_dim=features, funnel=args.funnel, base_transform_type=args.base_transform_type,
+#                              hidden_features=args.hidden_features, num_transform_blocks=args.num_transform_blocks,
+#                              num_flow_steps=args.num_flow_steps)
+transform = createMLP(features)
+distribution = distributions.StandardNormal((20,))
 flow = flows.Flow(transform, distribution).to(device)
 
 n_params = get_num_parameters(flow)
