@@ -22,6 +22,7 @@ from surVAE.data.hyper_dim import HyperCheckerboardDataset
 import argparse
 
 from surVAE.utils.io import save_object, get_top_dir, on_cluster
+from surVAE.utils.physics_utils import calculate_bmjj
 from surVAE.utils.plotting import getCrossFeaturePlot, plot2Dhist, plot_likelihood, get_bins, get_weights
 from surVAE.utils.torch_utils import tensor2numpy
 
@@ -34,7 +35,7 @@ def parse_args():
                         help='Choose the base output directory')
     parser.add_argument('-n', '--outputname', type=str, default='local',
                         help='Set the output name directory')
-    parser.add_argument('--load', type=int, default=0,
+    parser.add_argument('--load', type=int, default=1,
                         help='Load a model?')
 
     # Model set up
@@ -60,7 +61,7 @@ def parse_args():
     # Dataset and training parameters
     parser.add_argument('--batch_size', type=int, default=1000,
                         help='Whether to make the additional layers surVAE layers.')
-    parser.add_argument('--n_epochs', type=int, default=1,
+    parser.add_argument('--n_epochs', type=int, default=100,
                         help='Whether to make the additional layers surVAE layers.')
     parser.add_argument('--lr', type=float, default=0.001,
                         help='Whether to make the additional layers surVAE layers.')
@@ -75,6 +76,7 @@ def parse_args():
 
     return parser.parse_args()
 
+
 def read_ttbar_file(file):
     with open(file, 'rb') as f:
         array = np.load(f)
@@ -84,7 +86,10 @@ def read_ttbar_file(file):
     four_vectors = unstruct_array[:, four_vector_mask]
     tags = unstruct_array[:, ~four_vector_mask][:, :-2]
     et_info = unstruct_array[:, -2:]
-    return four_vectors, tags, et_info
+    names = np.array(array.dtype.names)
+    four_vector_mask[-2:] = True
+    return four_vectors, tags, et_info, names[four_vector_mask]
+
 
 def read_ttbar():
     if on_cluster():
@@ -95,11 +100,11 @@ def read_ttbar():
     tags = []
     et_info = []
     for file in files:
-        fv, tg, et = read_ttbar_file(file)
+        fv, tg, et, names = read_ttbar_file(file)
         four_vectors += [fv]
         tags += [tg]
         et_info += [et]
-    return np.concatenate(four_vectors), np.concatenate(tags), np.concatenate(et_info)
+    return np.concatenate(four_vectors), np.concatenate(tags), np.concatenate(et_info), names
 
 
 def ttbar_experiment():
@@ -109,7 +114,7 @@ def ttbar_experiment():
     # Set up the dataset and training parameters
     val_batch_size = 1000
 
-    four_vectors, tags, et_info = read_ttbar()
+    four_vectors, tags, et_info, names = read_ttbar()
 
     dataset = np.concatenate((four_vectors, et_info), 1)
     n_data = dataset.shape[0]
@@ -248,7 +253,7 @@ def ttbar_experiment():
     data_dim = test_set.data.shape[1]
     ncols = int(np.ceil(data_dim / 3))
     nrows = int(np.ceil(data_dim / ncols))
-    fig, axs_ = plt.subplots(nrows, ncols, figsize=(5 * ncols + 2, 5 * nrows + 2))
+    fig, axs_ = plt.subplots(nrows, ncols, figsize=(5 * ncols + 8, 5 * nrows + 2))
     axs = fig.axes
     for i in range(data_dim):
         bins = get_bins(test_set[:, i])
@@ -258,9 +263,46 @@ def ttbar_experiment():
         # Plot samples drawn from the model
         axs[i].hist(samples[:, i], label='samples', alpha=0.5, density=True, bins=bins,
                     weights=get_weights(samples[:, i]))
-        # axs[i].set_title(test_loader.feature_names[i])
-        axs[i].legend()
+        axs[i].set_title(names[i])
+        # axs[i].legend()
+    for j in range(i + 1, nrows * ncols):
+        axs[j].set_visible(False)
+    handles, labels = axs[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc='upper right', bbox_to_anchor=(0.1, 0.88), frameon=False)
     fig.savefig(svo.save_name('samples'))
+
+    def get_bmjj(data):
+        return calculate_bmjj(data[:, 0:4], data[:, 4:8], data[:, 8:12])
+
+    bmjj_samples = get_bmjj(tensor2numpy(train_data.unnormalize(torch.tensor(samples))))
+    bmjj = get_bmjj(dataset)
+    bmjj_samples = np.concatenate((bmjj_samples[:1500], bmjj))
+    bins = get_bins(bmjj, nbins=60)
+    fig, ax = plt.subplots(1, 1, figsize=(20, int(20 / 1.618)))
+    ax.hist(bmjj, label='data', alpha=0.5, density=True, bins=bins, weights=get_weights(bmjj))
+    # Plot samples drawn from the model
+    ax.hist(bmjj_samples, label='samples', alpha=0.5, density=True, bins=bins, weights=get_weights(bmjj_samples))
+    ax.legend(frameon=False, fontsize=32)
+    ax.tick_params(axis='both', which='major', labelsize=30, length=12)
+    ax.tick_params(axis='both', which='minor', labelsize=30)
+    # plt.tick_params(
+    #     axis='y',
+    #     which='both',
+    #     bottom=False,
+    #     top=False,
+    #     left=False,
+    #     right=False,
+    #     labelbottom=False,
+    #     labelleft=False)
+    ax.set_yticklabels([])
+    ax.set_xlim(right=1200)
+    plt.rcParams.update({
+        "text.usetex": True,
+        "font.family": "sans-serif",
+        "font.sans-serif": ["Helvetica"]})
+    ax.set_xlabel(r'm${}_{\mathrm{Top}, \mathrm{had}}$ [GeV]', fontsize=42)
+    ax.set_ylabel(r'a.u', fontsize=42)
+    fig.savefig(svo.save_name('bmjj'))
 
     # Plot the model density
     test_bs = int(1e5)

@@ -1,9 +1,10 @@
+from geomloss import SamplesLoss
 from nflows import transforms
 from nflows import flows
 import nflows
 import torch
 import torch.nn as nn
-from nflows.transforms import splines
+from nflows.transforms import splines, PiecewiseRationalQuadraticCDF
 from nflows.transforms.coupling import CouplingTransform
 from nflows.utils import sum_except_batch
 
@@ -97,6 +98,103 @@ def product_except_batch(x):
     return x.view(batch_size, -1).prod(1)
 
 
+class SurFlow(flows.Flow):
+    def __init__(self, transform, distribution, embedding_net=None, decoder=None, ot=False):
+        super(SurFlow, self).__init__(transform, distribution, embedding_net=embedding_net)
+        self.decoder = decoder
+        self.ot = ot
+
+    def _sample(self, num_samples, context):
+        if self.decoder is None:
+            return super(SurFlow, self)._sample(num_samples, context)
+        else:
+            base_samples = self._distribution.sample(num_samples)
+            return self.decoder.sample(1, context=base_samples).squeeze()
+
+    def _log_prob(self, inputs, context):
+        embedded_context = self._embedding_net(context)
+        noise, logabsdet = self._transform(inputs, context=embedded_context)
+        if self.ot:
+            samples = self._distribution.sample(inputs.shape[0])
+            log_prob = self._distribution.log_prob(noise, context=embedded_context)
+            log_prob -= SamplesLoss('sinkhorn', scaling=0.7, blur=0.01)(samples, inputs) * 10
+            # log_prob = - SamplesLoss('sinkhorn', scaling=0.7, blur=0.01)(samples, inputs)
+        else:
+            log_prob = self._distribution.log_prob(noise, context=embedded_context)
+        total_log_prob = log_prob + logabsdet
+        # if self.decoder is not None:
+        #     total_log_prob += self.decoder.log_prob(inputs, context=noise)
+        return total_log_prob
+
+
+class fComposite(transforms.Transform):
+    def __init__(self, transform_list, decoder=None, standard_ae=False):
+        super(fComposite, self).__init__()
+        self._transform = transforms.CompositeTransform([transform_list])
+        self._decoder = decoder
+        self.standard_ae = standard_ae
+
+    def forward(self, inputs, context=None):
+        output, log_abs = self._transform(inputs, context=context)
+        if self._decoder is not None:
+            log_prob = self._decoder.log_prob(inputs, context=output)
+        else:
+            log_prob = 0
+        if self.standard_ae:
+            return output, log_prob
+            # return output, torch.zeros_like(log_prob)
+        else:
+            return output, log_abs + log_prob
+
+    def inverse(self, inputs, context=None):
+        if self._decoder is not None:
+            samples, log_prob = self._decoder.sample_and_log_prob(1, context=inputs)
+            samples = samples.squeeze()
+        else:
+            samples, log_prob = self._transform.inverse(inputs, context)
+        return samples, log_prob.view(-1)
+
+
+class fMLP(nflows.transforms.Transform):
+    def __init__(self, in_nodes, out_nodes, direct_inference=True, decoder=None):
+        super(fMLP, self).__init__()
+        self.F = nn.Linear(in_nodes, out_nodes)
+        # torch.nn.init.ones_(self.F.weight)
+        # self.F.bias.data.fill_(0.0)
+        self.direct_inference = direct_inference
+        if not direct_inference:
+            if decoder is not None:
+                self.decoder = decoder(in_nodes, out_nodes)
+            else:
+                self.decoder = ConditionalGaussianDecoder(in_nodes, out_nodes)
+
+    def get_likelihood_contr(self):
+        # return self.F.weight.abs().prod(1).log().sum(0)
+        # return self.F.weight.abs().sum(1).log().sum(0)
+        # return self.F.weight.abs().mean(1).log().sum(0)
+        # return self.F.weight.abs().log().mean()
+        m = self.F.weight.shape[1]
+        return self.F.weight.abs().log().sum() / m
+        # return self.F.weight.abs().log()[:, 0].sum()
+
+    def forward(self, x, context=None):
+        output = self.F(x)
+        likelihood_contr = self.get_likelihood_contr()
+        if self.direct_inference:
+            likelihood_cond = torch.zeros(x.shape[0]).to(x.device)
+        else:
+            likelihood_cond = self.decoder.log_prob(x, context=output)
+        return output, likelihood_contr + likelihood_cond / x.shape[1]
+
+    def inverse(self, z, context=None):
+        if self.direct_inference:
+            raise RuntimeError('Using direct inference with this model, call decoder directly.')
+        else:
+            samples, log_prob = self.decoder.sample_and_log_prob(1, context=z)
+            likelihood_contr = self.get_likelihood_contr()
+            return samples.squeeze(), log_prob.view(-1) + likelihood_contr
+
+
 class TanhLayer(nflows.transforms.Transform):
     """
     Tanh activation as a survae layer, this assumes each point is independent and so the total log contribution
@@ -144,6 +242,22 @@ class LeakyRelu(nflows.transforms.Transform):
         x = z / leaky_relu
         detJ = 1 / leaky_relu
         return x, sum_except_batch(detJ.abs().log())
+
+
+class SPLEEN(PiecewiseRationalQuadraticCDF):
+
+    def __init__(self, tail_bound=1., tails=None, num_bins=10):
+        super(SPLEEN, self).__init__(1, tail_bound=tail_bound, tails=tails, num_bins=num_bins)
+
+    def forward(self, inputs, context=None):
+        sh = inputs.shape
+        out, contr = super(SPLEEN, self).forward(inputs.view(-1, 1))
+        return out.view(sh), contr.view(sh).sum(-1)
+
+    def inverse(self, inputs, context=None):
+        sh = inputs.shape
+        out, contr = super(SPLEEN, self).inverse(inputs.view(-1, 1))
+        return out.view(sh), contr.view(sh).sum(-1)
 
 
 class NByOneStandardConv(nflows.transforms.Transform):
@@ -850,48 +964,69 @@ class make_generator(flows.Flow):
         return super(make_generator, self)._sample(num_samples, context).view(-1, *self.dropped_entries_shape)
 
 
-class ConditionalGaussianDecoder(nflows.distributions.Distribution):
+# class ConditionalGaussianDecoder(nflows.distributions.Distribution):
+#
+#     def __init__(self, dropped_entries_shape, context_shape, transform_kwargs=None, width=128, depth=3):
+#         """
+#         :param dropped_entries_shape: the shape of the data that needs to be sampled and evaluated (for likelihood)
+#         :param context_shape: the shape of the data that will be passed as context
+#         :return: a flow capable of generating, and evaluating the likelihood, data of shape dropped_entries_shape given
+#                  data of shape context_shape as context.
+#         """
+#         super(ConditionalGaussianDecoder, self).__init__()
+#         if not isinstance(transform_kwargs, dict):
+#             transform_kwargs = {}
+#         self.output_size = int(np.prod(dropped_entries_shape))
+#         self.context_size = int(np.prod(context_shape))
+#         self.rpi = 0.5 * torch.log(torch.tensor(2 * np.pi))
+#
+#         self.net = dense_net(self.context_size, self.output_size * 2, layers=[width] * depth)
+#         # self.net = dense_net(self.context_size, self.output_size * 2, layers=[64] * 3)
+#
+#     def get_param(self, context):
+#         context = context.view(-1, self.context_size)
+#         return self.net(context).split(self.output_size, dim=1)
+#
+#     def _log_prob(self, inputs, context):
+#         mean, log_sigma = self.get_param(context)
+#         sigma = torch.exp(-log_sigma)
+#         inputs = inputs.view(-1, self.output_size)
+#         log_prob = -0.5 * ((mean - inputs) / sigma) ** 2 - log_sigma - self.rpi
+#         return log_prob.sum(-1)
+#
+#     def _sample(self, num_samples, context):
+#         # Ignore num_samples as it is always defined by the size of the context
+#         mean, log_sigma = self.get_param(context)
+#         sigma = torch.exp(log_sigma)
+#         epsilon = torch.normal(mean=torch.zeros_like(mean), std=torch.ones_like(mean))
+#         return (mean + sigma * epsilon).unsqueeze(0)
+#         # return mean.unsqueeze(0)
 
-    def __init__(self, dropped_entries_shape, context_shape, transform_kwargs=None):
+
+class ConditionalGaussianDecoder(nflows.distributions.ConditionalDiagonalNormal):
+
+    def __init__(self, dropped_entries_shape, context_shape, transform_kwargs=None, width=128, depth=3):
         """
         :param dropped_entries_shape: the shape of the data that needs to be sampled and evaluated (for likelihood)
         :param context_shape: the shape of the data that will be passed as context
         :return: a flow capable of generating, and evaluating the likelihood, data of shape dropped_entries_shape given
                  data of shape context_shape as context.
         """
-        super(ConditionalGaussianDecoder, self).__init__()
-        if not isinstance(transform_kwargs, dict):
-            transform_kwargs = {}
         self.output_size = int(np.prod(dropped_entries_shape))
         self.context_size = int(np.prod(context_shape))
-        self.rpi = 0.5 * torch.log(torch.tensor(2 * np.pi))
-
-        self.net = dense_net(self.context_size, self.output_size * 2, layers=[128] * 3)
-        # self.net = dense_net(self.context_size, self.output_size * 2, layers=[64] * 3)
-
-    def get_param(self, context):
-        context = context.view(-1, self.context_size)
-        return self.net(context).split(self.output_size, dim=1)
-
+        super(ConditionalGaussianDecoder, self).__init__([dropped_entries_shape],
+                                                         dense_net(self.context_size, self.output_size * 2,
+                                                                   layers=[width] * depth))
+        
     def _log_prob(self, inputs, context):
-        mean, log_sigma = self.get_param(context)
-        sigma = torch.exp(log_sigma)
-        inputs = inputs.view(-1, self.output_size)
-        log_prob = -0.5 * ((mean - inputs) / sigma) ** 2 - log_sigma - self.rpi
-        return log_prob.sum(-1)
-
-    def _sample(self, num_samples, context):
-        # Ignore num_samples as it is always defined by the size of the context
-        mean, log_sigma = self.get_param(context)
-        sigma = torch.exp(log_sigma)
-        epsilon = torch.normal(mean=torch.zeros_like(mean), std=torch.ones_like(mean))
-        return (mean + sigma * epsilon).unsqueeze(0)
-        # return mean.unsqueeze(0)
+        lp = super(ConditionalGaussianDecoder, self)._log_prob(inputs, context)
+        # TODO: clip likelihoods to see if it stop loss diverging
+        return torch.clip(lp, min=-10000)
 
 
 class ConditionalFixedDecoder(nflows.distributions.Distribution):
 
-    def __init__(self, dropped_entries_shape, context_shape, transform_kwargs=None):
+    def __init__(self, dropped_entries_shape, context_shape, transform_kwargs=None, sigma=0.1, width=256, depth=3):
         """
         :param dropped_entries_shape: the shape of the data that needs to be sampled and evaluated (for likelihood)
         :param context_shape: the shape of the data that will be passed as context
@@ -904,9 +1039,9 @@ class ConditionalFixedDecoder(nflows.distributions.Distribution):
         self.output_size = int(np.prod(dropped_entries_shape))
         self.context_size = int(np.prod(context_shape))
         self.rpi = torch.tensor((2 * np.pi) ** (1 / 2), dtype=torch.float32)
-        self.sigma = torch.tensor(0.1, dtype=torch.float32)
+        self.sigma = torch.tensor(sigma, dtype=torch.float32)
 
-        self.net = dense_net(self.context_size, self.output_size, layers=[256] * 3)
+        self.net = dense_net(self.context_size, self.output_size, layers=[width] * depth)
         # self.net = dense_net(self.context_size, self.output_size, layers=[64] * 3)
 
     def get_param(self, context):
@@ -923,7 +1058,7 @@ class ConditionalFixedDecoder(nflows.distributions.Distribution):
     def _sample(self, num_samples, context):
         # Ignore num_samples as it is always defined by the size of the context
         mean = self.get_param(context)
-        epsilon = torch.normal(mean=torch.zeros_like(mean), std=torch.ones_like(mean) * 0.1)
+        epsilon = torch.normal(mean=torch.zeros_like(mean), std=torch.ones_like(mean))
         return (mean + self.sigma * epsilon).unsqueeze(0)
         # return mean.unsqueeze(0)
 

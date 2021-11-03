@@ -59,10 +59,7 @@ def getCrossFeaturePlot(data, nm, nbins=50, anomalies=None):
                     if anomalies is not None:
                         axes[i, i].hist(tensor2numpy(anomalies[:, i]), bins=nbins, alpha=0.5, density=True)
                 elif i < j:
-                    bini = get_bins(data[:, i])
-                    binj = get_bins(data[:, j])
-                    axes[i, j].hist2d(tensor2numpy(data[:, i]), tensor2numpy(data[:, j]), bins=[bini, binj],
-                                      density=True, cmap='Reds')
+                    plot2Dhist(tensor2numpy(data[:, i:j+1]), axes[i, j], bounds=[-4, 4])
                 else:
                     if anomalies is not None:
                         bini = get_bins(anomalies[:, i])

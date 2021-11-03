@@ -1,6 +1,8 @@
 from nflows import transforms
 from torch.nn import functional as F
 
+from surVAE.models.nn.MLPs import dense_net
+
 
 def get_transform(inp_dim=1, nodes=64, num_blocks=2, nstack=2, tails='linear', tail_bound=1., num_bins=10,
                   context_features=1, lu=1, bnorm=1, spline=True, activation=F.leaky_relu):
@@ -39,7 +41,11 @@ def get_transform(inp_dim=1, nodes=64, num_blocks=2, nstack=2, tails='linear', t
     return transforms.CompositeTransform(transform_list[:-1])
 
 
-def coupling_spline(inp_dim, maker, nstack=3, tail_bound=None, tails=None, activation=F.relu, lu=0,
+def maker_net(input_dim, output_dim):
+    return dense_net(input_dim, output_dim, layers=[128] * 3)
+
+
+def coupling_spline(inp_dim, maker=maker_net, nstack=3, tail_bound=None, tails=None, activation=F.relu, lu=0,
                     num_bins=10, mask=[1, 0], unconditional_transform=True):
     transform_list = []
     for i in range(nstack):
@@ -68,6 +74,7 @@ def coupling_spline(inp_dim, maker, nstack=3, tail_bound=None, tails=None, activ
 
 import nflows.nn as nn_
 from nflows.utils import get_num_parameters, create_alternating_binary_mask
+
 
 def get_transform_full(inp_dim=1, nodes=64, num_blocks=2, nstack=2, tails=None, tail_bound=1., num_bins=10,
                        context_features=1, lu=1, bnorm=1, model='rq_coupling', activation=F.leaky_relu,
