@@ -21,6 +21,7 @@ import surVAE.utils as utils
 from nflows import distributions, flows, transforms
 
 from surVAE.models import sur_flows
+from surVAE.models.VAE import VAE
 from surVAE.utils.io import get_timestamp, on_cluster, get_log_root, get_checkpoint_root, save_object
 
 parser = argparse.ArgumentParser()
@@ -56,7 +57,9 @@ parser.add_argument('--grad_norm_clip_value', type=float, default=5.,
                     help='Value by which to clip norm of gradients.')
 
 # flow details
-parser.add_argument('--base_transform_type', type=str, default='affine-autoregressive',
+parser.add_argument('--vae', type=int, default=2,
+                    help='Train a vae?')
+parser.add_argument('--base_transform_type', type=str, default='rq-coupling',
                     choices=['affine-coupling', 'quadratic-coupling', 'rq-coupling',
                              'affine-autoregressive', 'quadratic-autoregressive',
                              'rq-autoregressive'],
@@ -350,14 +353,21 @@ def create_transform(inp_dim, context_features=None, funnel=False, base_transfor
 
 
 # create model
-if args.funnel >= 0:
-    distribution = distributions.StandardNormal((int(features - args.funnel),))
-elif args.funnel == -1:
-    distribution = distributions.StandardNormal((2,))
-transform = create_transform(inp_dim=features, funnel=args.funnel, base_transform_type=args.base_transform_type,
-                             hidden_features=args.hidden_features, num_transform_blocks=args.num_transform_blocks,
-                             num_flow_steps=args.num_flow_steps)
-flow = flows.Flow(transform, distribution).to(device)
+if args.vae:
+    depth = 8
+    width = 256
+    # layers = [512, 512, 512]
+    layers = [width] * depth
+    flow = VAE(features, features - args.vae, layers)
+else:
+    if args.funnel >= 0:
+        distribution = distributions.StandardNormal((int(features - args.funnel),))
+    elif args.funnel == -1:
+        distribution = distributions.StandardNormal((2,))
+    transform = create_transform(inp_dim=features, funnel=args.funnel, base_transform_type=args.base_transform_type,
+                                 hidden_features=args.hidden_features, num_transform_blocks=args.num_transform_blocks,
+                                 num_flow_steps=args.num_flow_steps)
+    flow = flows.Flow(transform, distribution).to(device)
 
 n_params = get_num_parameters(flow)
 print('There are {} trainable parameters in this model.'.format(n_params))

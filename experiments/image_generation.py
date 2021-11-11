@@ -15,6 +15,7 @@ from torchvision.utils import make_grid, save_image
 
 # def config():
 # Saving
+from surVAE.models import ReverseSqueezeTransform
 from surVAE.models.sur_flows import NByOneConv, SurNSF, surRqNSF, NByOneSlice, NByOneStandardConv, TanhLayer, LeakyRelu, \
     NByOneInnConv, SurConv
 from surVAE.utils.io import save_object
@@ -38,7 +39,7 @@ def parse_args():
     parser.add_argument('--train_flow', type=int, default=1, help='Train the flow?')
 
     # Model set up
-    parser.add_argument('--model', type=str, default='funnel_conv',
+    parser.add_argument('--model', type=str, default='funnel_conv_deeper',
                         help='The dimension of the input data.')
     parser.add_argument('--slice', type=int, default=2,
                         help='Use a funnel or slice the tensor?')
@@ -86,7 +87,7 @@ def parse_args():
                         help='Spline tail bound.')
 
     # Dataset and training parameters
-    parser.add_argument('--dataset', type=str, default='mnist',
+    parser.add_argument('--dataset', type=str, default=' ',
                         help='The name of the plane dataset on which to train.')
     # parser.add_argument('--dataset', type=str, default='imagenet-64-fast',
     #                     help='The name of the plane dataset on which to train.')
@@ -584,7 +585,7 @@ def create_transform(flow_type, size_in, size_out):
 
                 if args.funnel_first == 0:
                     if level < 2:
-                    # if level == 0:
+                        # if level == 0:
                         funnel_model, width = funnel_conv(c, level_hidden_channels, w)
                         all_transforms += [funnel_model]
                         # w = int((w - w % conv_width) * (conv_width - 1) / conv_width)
@@ -597,6 +598,53 @@ def create_transform(flow_type, size_in, size_out):
                 input_shape=(c, h, w),
                 output_shape=(c * h * w,)
             ))
+
+    elif 'funnel_conv_deeper':
+        squeeze_factor = 2
+
+        def get_squeeze(c, h, w):
+            image_size = c * h * w
+            squeeze_transform = transforms.SqueezeTransform(factor=squeeze_factor)
+            c_t, h_t, w_t = squeeze_transform.get_output_shape(c, h, w)
+            if c_t * h_t * w_t == image_size:
+                squeeze = 1
+                c, h, w = c_t, h_t, w_t
+            else:
+                squeeze = 0
+            return squeeze, c, h, w, squeeze_transform
+
+        for level, level_hidden_channels in zip(range(levels), hidden_channels):
+            squeeze, c, h, w, squeeze_transform = get_squeeze(c, h, w)
+            if squeeze:
+                reverse_squeeze = ReverseSqueezeTransform(factor=squeeze_factor)
+                all_transforms += [squeeze_transform,
+                                   # TODO: comment this out?
+                                   create_transform_step(c, level_hidden_channels),
+                                   transforms.OneByOneConvolution(c),
+                                   reverse_squeeze]
+                c, h, w = reverse_squeeze.get_output_shape(c, h, w)
+            else:
+                all_transforms += [create_transform_step(c, level_hidden_channels),
+                                   transforms.OneByOneConvolution(c)]
+            funnel_model, width = funnel_conv(c, level_hidden_channels, w)
+            w = width
+            h = w
+            all_transforms += [funnel_model]
+
+            # squeeze, c, h, w, squeeze_transform = get_squeeze(c, h, w)
+            layer_transform = [create_transform_step(c, level_hidden_channels) for _ in range(steps_per_level)] + [
+                transforms.OneByOneConvolution(c)]
+            # if squeeze:
+            #     # reverse_squeeze = ReverseSqueezeTransform(factor=squeeze_factor)
+            #     # c, h, w = reverse_squeeze.get_output_shape(c, h, w)
+            #     layer_transform = [squeeze_transform] + layer_transform  # + [reverse_squeeze]
+            all_transforms += [transforms.CompositeTransform(layer_transform)]
+            print(c, h, w)
+
+        all_transforms.append(ReshapeTransform(
+            input_shape=(c, h, w),
+            output_shape=(c * h * w,)
+        ))
 
     elif flow_type == 'funnel':
         # image_size = c * h * w

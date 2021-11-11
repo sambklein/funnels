@@ -169,13 +169,9 @@ class fMLP(nflows.transforms.Transform):
                 self.decoder = ConditionalGaussianDecoder(in_nodes, out_nodes)
 
     def get_likelihood_contr(self):
-        # return self.F.weight.abs().prod(1).log().sum(0)
-        # return self.F.weight.abs().sum(1).log().sum(0)
-        # return self.F.weight.abs().mean(1).log().sum(0)
-        # return self.F.weight.abs().log().mean()
-        m = self.F.weight.shape[1]
-        return self.F.weight.abs().log().sum() / m
-        # return self.F.weight.abs().log()[:, 0].sum()
+        # m = self.F.weight.shape[1]
+        # return self.F.weight.abs().log().sum() / m
+        return self.F.weight.abs().mean(1).log().sum()
 
     def forward(self, x, context=None):
         output = self.F(x)
@@ -184,7 +180,10 @@ class fMLP(nflows.transforms.Transform):
             likelihood_cond = torch.zeros(x.shape[0]).to(x.device)
         else:
             likelihood_cond = self.decoder.log_prob(x, context=output)
-        return output, likelihood_contr + likelihood_cond / x.shape[1]
+        m = self.F.weight.shape[1]
+        total_likelihood_contr = likelihood_contr + likelihood_cond / m
+        # total_likelihood_contr = likelihood_contr + likelihood_cond / m + np.log(m) / m
+        return output, total_likelihood_contr
 
     def inverse(self, z, context=None):
         if self.direct_inference:
@@ -262,7 +261,7 @@ class SPLEEN(PiecewiseRationalQuadraticCDF):
 
 class NByOneStandardConv(nflows.transforms.Transform):
     """
-    An N x 1 funnel convolution with the stride fixed to N.
+    A width x width funnel convolution with the stride fixed to width.
     """
 
     def __init__(self, num_channels, image_width, width=2, hidden_features=128, num_blocks=2,
@@ -270,7 +269,8 @@ class NByOneStandardConv(nflows.transforms.Transform):
                  **kwargs):
         super(NByOneStandardConv, self).__init__()
 
-        self.padding = 0  # (width - 1)
+        # TODO: play with this for getting the transforms correct
+        self.padding = 0
         self.stride = width
         self.forward_convolution = nn.Conv2d(num_channels, num_channels, width, stride=self.stride,
                                              padding=self.padding)
@@ -286,7 +286,7 @@ class NByOneStandardConv(nflows.transforms.Transform):
         self.num_channels = num_channels
         self.width = width
         self.n_dropped = num_channels * (width ** 2 - 1)
-        self.output_image_size = int(image_width / 2)
+        self.output_image_size = int((image_width + self.padding) / 2)
 
         mx = torch.ones(self.width ** 2 * self.num_channels + 1, dtype=torch.bool)
         mx[::self.width ** 2] = 0
@@ -1017,7 +1017,7 @@ class ConditionalGaussianDecoder(nflows.distributions.ConditionalDiagonalNormal)
         super(ConditionalGaussianDecoder, self).__init__([dropped_entries_shape],
                                                          dense_net(self.context_size, self.output_size * 2,
                                                                    layers=[width] * depth))
-        
+
     def _log_prob(self, inputs, context):
         lp = super(ConditionalGaussianDecoder, self)._log_prob(inputs, context)
         # TODO: clip likelihoods to see if it stop loss diverging

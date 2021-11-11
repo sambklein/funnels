@@ -31,7 +31,7 @@ def parse_args():
                         help='Choose the base output directory')
     parser.add_argument('-n', '--outputname', type=str, default='local',
                         help='Set the output name directory')
-    parser.add_argument('--load', type=int, default=1, help='Load a model?')
+    parser.add_argument('--load', type=int, default=0, help='Load a model?')
 
     # Model set up
     parser.add_argument('--inp_dim', type=int, default=2,
@@ -60,7 +60,7 @@ def parse_args():
                         help='The name of the plane dataset on which to train.')
     parser.add_argument('--batch_size', type=int, default=1000,
                         help='Whether to make the additional layers surVAE layers.')
-    parser.add_argument('--n_epochs', type=int, default=200,
+    parser.add_argument('--n_epochs', type=int, default=100,
                         help='Whether to make the additional layers surVAE layers.')
     parser.add_argument('--lr', type=float, default=0.001,
                         help='Whether to make the additional layers surVAE layers.')
@@ -103,8 +103,8 @@ def checkerboard_test():
     activ_kwargs = {}
     # activ = PiecewiseRationalQuadraticCDF
     # activ_kwargs = {'shape': hs, 'tail_bound': 4., 'tails': 'linear', 'num_bins': 10}
-    # activ = sur_flows.SPLEEN
-    # activ_kwargs = {'tail_bound': 4., 'tails': 'linear', 'num_bins': 10}
+    activ = sur_flows.SPLEEN
+    activ_kwargs = {'tail_bound': 4., 'tails': 'linear', 'num_bins': 5}
     direct_inference = False
     # def decoder(in_nodes, out_nodes):
     #     bd2 = nflows.distributions.StandardNormal([in_nodes])
@@ -145,10 +145,10 @@ def checkerboard_test():
     if torch.cuda.is_available():
         device = torch.device('cuda')
         torch.set_default_tensor_type('torch.cuda.FloatTensor')
-    # bd2 = nflows.distributions.StandardNormal([inp_dim])
-    # trans = get_transform(inp_dim, context_features=out_dim, tail_bound=4, num_bins=5, nstack=4)
-    # decoder = flows.Flow(trans, bd2) if direct_inference else None
-    decoder = sur_flows.ConditionalGaussianDecoder(inp_dim, out_dim, width=256, depth=3) if direct_inference else None
+    bd2 = nflows.distributions.StandardNormal([inp_dim])
+    trans = get_transform(inp_dim, context_features=out_dim, tail_bound=4, num_bins=5, nstack=4)
+    decoder = flows.Flow(trans, bd2) if direct_inference else None
+    # decoder = sur_flows.ConditionalGaussianDecoder(inp_dim, out_dim, width=256, depth=3) # if direct_inference else None
     # decoder = sur_flows.ConditionalFixedDecoder(inp_dim, out_dim, width=256, depth=3,
     #                                             sigma=0.1) if direct_inference else None
 
