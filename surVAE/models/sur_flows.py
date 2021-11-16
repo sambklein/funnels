@@ -169,9 +169,10 @@ class fMLP(nflows.transforms.Transform):
                 self.decoder = ConditionalGaussianDecoder(in_nodes, out_nodes)
 
     def get_likelihood_contr(self):
-        # m = self.F.weight.shape[1]
-        # return self.F.weight.abs().log().sum() / m
-        return self.F.weight.abs().mean(1).log().sum()
+        n = self.F.weight.shape[1]
+        # return self.F.weight.abs().log().sum() / n
+        # return -((1 / self.F.weight).sum(1) / n).abs().log().sum()
+        return self.F.weight.abs().log().sum(0).mean()
 
     def forward(self, x, context=None):
         output = self.F(x)
