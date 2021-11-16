@@ -1,7 +1,11 @@
 # https://github.com/sbarratt/inception-score-pytorch/blob/master/inception_score.py
 import argparse
+import glob
+import os
+import pathlib
 
 import torch
+from imageio import imread
 from torch import nn
 from torch.autograd import Variable
 from torch.nn import functional as F
@@ -11,8 +15,6 @@ from torchvision.models.inception import inception_v3
 
 import numpy as np
 from scipy.stats import entropy
-
-from surVAE.data.image_data import get_image_data
 
 
 def inception_score(imgs, cuda=True, batch_size=32, resize=False, splits=1):
@@ -41,7 +43,7 @@ def inception_score(imgs, cuda=True, batch_size=32, resize=False, splits=1):
 
     # Load inception model
     inception_model = inception_v3(pretrained=True, transform_input=False).type(dtype)
-    inception_model.eval();
+    inception_model.eval()
     up = nn.Upsample(size=(299, 299), mode='bilinear').type(dtype)
 
     def get_pred(x):
@@ -75,36 +77,35 @@ def inception_score(imgs, cuda=True, batch_size=32, resize=False, splits=1):
     return np.mean(split_scores), np.std(split_scores)
 
 
-class IgnoreLabelDataset(torch.utils.data.Dataset):
-    def __init__(self, orig):
-        self.orig = orig
+class SimpleDataset(torch.utils.data.Dataset):
+    def __init__(self, data):
+        self.data = np.transpose(data, (0, 3, 2, 1))
 
     def __getitem__(self, index):
-        return self.orig[index][0]
+        return self.data[index]
 
     def __len__(self):
-        return len(self.orig)
+        return len(self.data)
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, default='cifar-10', help='String name of the dataset')
-    parser.add_argument('--num_bits', type=int, default=5, help='Number of bits')
     return parser.parse_args()
 
 
-def get_images(dataset, num_bits):
-    # TODO: do you need the full training dataset?
-    if dataset != 'mnist':
-        save_dataset, _ = get_image_data(dataset, num_bits, train=False)
-    else:
-        save_dataset, _, _ = get_image_data(dataset, num_bits, train=True, valid_frac=0.01)
-    return save_dataset
+def get_images(dataset):
+    if not os.path.isdir(dataset):
+        raise Exception('path does not exist')
+    files = list(glob.glob(f'{dataset}/*.jpg')) + list(glob.glob(f'{dataset}/*.png'))
+    save_dataset = np.array([imread(str(fn)).astype(np.float32) for fn in files])
+    return save_dataset * 2 - 1
 
 
 if __name__ == '__main__':
     args = parse_args()
-    data = get_images(args.dataset, args.num_bits)
+    print(f'Evaluating on {args.dataset}.')
+    data = get_images(args.dataset)
 
     print("Calculating Inception Score...")
-    print(inception_score(IgnoreLabelDataset(data), cuda=True, batch_size=32, resize=True, splits=10))
+    print(inception_score(SimpleDataset(data), cuda=True, batch_size=32, resize=True, splits=10))

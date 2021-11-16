@@ -59,7 +59,7 @@ parser.add_argument('--grad_norm_clip_value', type=float, default=5.,
 # flow details
 parser.add_argument('--vae', type=int, default=2,
                     help='Train a vae?')
-parser.add_argument('--base_transform_type', type=str, default='rq-coupling',
+parser.add_argument('--base_transform_type', type=str, default='vae',
                     choices=['affine-coupling', 'quadratic-coupling', 'rq-coupling',
                              'affine-autoregressive', 'quadratic-autoregressive',
                              'rq-autoregressive'],
@@ -354,7 +354,8 @@ def create_transform(inp_dim, context_features=None, funnel=False, base_transfor
 
 # create model
 if args.vae:
-    depth = 8
+    # TODO: kwargs!!
+    depth = 4
     width = 256
     # layers = [512, 512, 512]
     layers = [width] * depth

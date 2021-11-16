@@ -15,7 +15,8 @@ from torchvision.utils import make_grid, save_image
 
 # def config():
 # Saving
-from surVAE.models import ReverseSqueezeTransform
+from surVAE.models import ReverseSqueezeTransform, util_transforms
+from surVAE.models.VAE import VAE
 from surVAE.models.sur_flows import NByOneConv, SurNSF, surRqNSF, NByOneSlice, NByOneStandardConv, TanhLayer, LeakyRelu, \
     NByOneInnConv, SurConv
 from surVAE.utils.io import save_object
@@ -37,9 +38,10 @@ def parse_args():
     parser.add_argument('-n', '--outputname', type=str, default='local', help='Set the output name directory')
     parser.add_argument('--load', type=int, default=0, help='Load a model?')
     parser.add_argument('--train_flow', type=int, default=1, help='Train the flow?')
+    parser.add_argument('--n_gen', type=int, default=10000, help='Number of samples to generate for evaluation.')
 
     # Model set up
-    parser.add_argument('--model', type=str, default='funnel_conv_deeper',
+    parser.add_argument('--model', type=str, default='VAE',
                         help='The dimension of the input data.')
     parser.add_argument('--slice', type=int, default=2,
                         help='Use a funnel or slice the tensor?')
@@ -87,7 +89,7 @@ def parse_args():
                         help='Spline tail bound.')
 
     # Dataset and training parameters
-    parser.add_argument('--dataset', type=str, default=' ',
+    parser.add_argument('--dataset', type=str, default='cifar-10-fast',
                         help='The name of the plane dataset on which to train.')
     # parser.add_argument('--dataset', type=str, default='imagenet-64-fast',
     #                     help='The name of the plane dataset on which to train.')
@@ -599,53 +601,6 @@ def create_transform(flow_type, size_in, size_out):
                 output_shape=(c * h * w,)
             ))
 
-    elif 'funnel_conv_deeper':
-        squeeze_factor = 2
-
-        def get_squeeze(c, h, w):
-            image_size = c * h * w
-            squeeze_transform = transforms.SqueezeTransform(factor=squeeze_factor)
-            c_t, h_t, w_t = squeeze_transform.get_output_shape(c, h, w)
-            if c_t * h_t * w_t == image_size:
-                squeeze = 1
-                c, h, w = c_t, h_t, w_t
-            else:
-                squeeze = 0
-            return squeeze, c, h, w, squeeze_transform
-
-        for level, level_hidden_channels in zip(range(levels), hidden_channels):
-            squeeze, c, h, w, squeeze_transform = get_squeeze(c, h, w)
-            if squeeze:
-                reverse_squeeze = ReverseSqueezeTransform(factor=squeeze_factor)
-                all_transforms += [squeeze_transform,
-                                   # TODO: comment this out?
-                                   create_transform_step(c, level_hidden_channels),
-                                   transforms.OneByOneConvolution(c),
-                                   reverse_squeeze]
-                c, h, w = reverse_squeeze.get_output_shape(c, h, w)
-            else:
-                all_transforms += [create_transform_step(c, level_hidden_channels),
-                                   transforms.OneByOneConvolution(c)]
-            funnel_model, width = funnel_conv(c, level_hidden_channels, w)
-            w = width
-            h = w
-            all_transforms += [funnel_model]
-
-            # squeeze, c, h, w, squeeze_transform = get_squeeze(c, h, w)
-            layer_transform = [create_transform_step(c, level_hidden_channels) for _ in range(steps_per_level)] + [
-                transforms.OneByOneConvolution(c)]
-            # if squeeze:
-            #     # reverse_squeeze = ReverseSqueezeTransform(factor=squeeze_factor)
-            #     # c, h, w = reverse_squeeze.get_output_shape(c, h, w)
-            #     layer_transform = [squeeze_transform] + layer_transform  # + [reverse_squeeze]
-            all_transforms += [transforms.CompositeTransform(layer_transform)]
-            print(c, h, w)
-
-        all_transforms.append(ReshapeTransform(
-            input_shape=(c, h, w),
-            output_shape=(c * h * w,)
-        ))
-
     elif flow_type == 'funnel':
         # image_size = c * h * w
         for level, level_hidden_channels in zip(range(levels), hidden_channels):
@@ -681,6 +636,139 @@ def create_transform(flow_type, size_in, size_out):
             output_shape=(c * h * w,)
         ))
 
+    elif flow_type == 'VAE':
+        width = 2
+        stride = 1
+        n_chan = c
+        padding = 0
+        MLP_width = 512
+        # TODO: need to infer this to match that of the Funnel
+        latent_size = 16
+        conv_params = {'in_channels': n_chan, 'out_channels': n_chan, 'kernel_size': width, 'stride': stride,
+                       'padding': padding}
+        # post_conv_width = w / (width ** 2)
+        post_conv_width = w
+        post_conv_size = int(np.floor(n_chan * post_conv_width ** 2))
+
+        # TODO: Need to match the number of parameters
+        class Reshape(nn.Module):
+            def __init__(self, shape):
+                super(Reshape, self).__init__()
+                self.shape = shape
+
+            def forward(self, x):
+                return x.view(x.shape[0], *self.shape)
+
+        def get_model(direction=1):
+            # # TODO: the CNN part is TINY! it has very few parameters and so you are being unfair ie) very few parameters for lots of compression RESNET?
+            # CNN = [nn.Conv2d(**conv_params),
+            #        nn.ZeroPad2d((0, 1, 0, 1)),
+            #        nn.ReLU(),
+            #        nn.Conv2d(**conv_params),
+            #        nn.ZeroPad2d((0, 1, 0, 1)),
+            #        nn.ReLU(),
+            #        nn.Conv2d(**conv_params),
+            #        nn.ZeroPad2d((0, 1, 0, 1)),
+            #        nn.ReLU()]
+            #
+            # MLP = [nn.ReLU(),
+            #        nn.Linear(MLP_width, MLP_width),
+            #        nn.ReLU(),
+            #        nn.Linear(MLP_width, MLP_width),
+            #        nn.ReLU()]
+            # if direction == -1:
+            #     MLP = [nn.Linear(MLP_width, post_conv_size)] + MLP + [nn.Linear(latent_size, MLP_width)]
+            #     return MLP[::-1] + [Reshape((n_chan, post_conv_width, post_conv_width))] + CNN[::-1] # + [nn.Sigmoid()]
+            # else:
+            #     MLP = [nn.Linear(post_conv_size, MLP_width)] + MLP + [nn.Linear(MLP_width, latent_size * 2)]
+            #     return CNN + [nn.Flatten()] + MLP
+            if direction == -1: 
+                MLP_width = 512
+                MLP = [nn.Linear(latent_size, MLP_width),
+                       nn.ReLU(),
+                       nn.Linear(MLP_width, MLP_width),
+                       nn.ReLU(),
+                       nn.Linear(MLP_width, MLP_width),
+                       nn.ReLU(),
+                       nn.Linear(MLP_width, c * h * w),
+                       # nn.Sigmoid(),
+                       Reshape((c, h, w))]
+                return MLP
+            else:
+                MLP_width = 512
+                MLP = [Reshape([c * h * w]),
+                       nn.Linear(c * h * w, MLP_width),
+                       nn.ReLU(),
+                       nn.Linear(MLP_width, MLP_width),
+                       nn.ReLU(),
+                       nn.Linear(MLP_width, MLP_width),
+                       nn.ReLU(),
+                       nn.Linear(MLP_width, latent_size * 2)]
+                return MLP
+
+        encoder = nn.Sequential(
+            *get_model()
+        )
+        decoder = nn.Sequential(
+            *get_model(direction=-1)
+        )
+
+        vae = VAE(0, latent_size, 0, encoder=encoder, decoder=decoder)
+
+        # autoencoder = nn.Sequential(encoder, decoder)
+        # print(f'{get_num_parameters(encoder):,}')
+        # print(f'{get_num_parameters(autoencoder):,}')
+
+    elif 'funnel_conv_deeper':
+        squeeze_factor = 2
+
+        def get_squeeze(c, h, w):
+            image_size = c * h * w
+            squeeze_transform = transforms.SqueezeTransform(factor=squeeze_factor)
+            c_t, h_t, w_t = squeeze_transform.get_output_shape(c, h, w)
+            if c_t * h_t * w_t == image_size:
+                squeeze = 1
+                c, h, w = c_t, h_t, w_t
+            else:
+                squeeze = 0
+            return squeeze, c, h, w, squeeze_transform
+
+        for level, level_hidden_channels in zip(range(levels), hidden_channels):
+            squeeze, c, h, w, squeeze_transform = get_squeeze(c, h, w)
+            if squeeze:
+                reverse_squeeze = ReverseSqueezeTransform(factor=squeeze_factor)
+                all_transforms += [squeeze_transform] + [create_transform_step(c, level_hidden_channels)] + [
+                    transforms.OneByOneConvolution(c), reverse_squeeze]
+                c, h, w = reverse_squeeze.get_output_shape(c, h, w)
+            else:
+                all_transforms += [create_transform_step(c, level_hidden_channels),
+                                   transforms.OneByOneConvolution(c)]
+            # TODO: here you could try an augment layer to increase the channel dimensions to make it more similar to
+            # TODO: a standard CNN with additional channels in the output of the convolution
+            funnel_model, width = funnel_conv(c, level_hidden_channels, w)
+            w = width
+            all_transforms += [funnel_model]
+            if w % 2 != 0:
+                all_transforms += [util_transforms.PaddingSurjection(1)]
+                w += 1
+                w += 1
+            h = w
+
+            squeeze, c, h, w, squeeze_transform = get_squeeze(c, h, w)
+            layer_transform = [create_transform_step(c, level_hidden_channels) for _ in range(steps_per_level)] + [
+                transforms.OneByOneConvolution(c)]
+            if squeeze:
+                reverse_squeeze = ReverseSqueezeTransform(factor=squeeze_factor)
+                c, h, w = reverse_squeeze.get_output_shape(c, h, w)
+                layer_transform = [squeeze_transform] + layer_transform + [reverse_squeeze]
+            all_transforms += [transforms.CompositeTransform(layer_transform)]
+            print(c, h, w)
+
+        all_transforms.append(ReshapeTransform(
+            input_shape=(c, h, w),
+            output_shape=(c * h * w,)
+        ))
+
     else:
         raise RuntimeError('Unknown type of flow')
 
@@ -697,21 +785,28 @@ def create_transform(flow_type, size_in, size_out):
     else:
         raise RuntimeError('Unknown preprocessing type: {}'.format(preprocessing))
 
-    return transforms.CompositeTransform([preprocess_transform, mct]), (c, h, w)
+    if flow_type == 'VAE':
+        vae.set_preprocessing(preprocess_transform)
+        return vae, (c, h, w)
+    else:
+        return transforms.CompositeTransform([preprocess_transform, mct]), (c, h, w)
 
 
 def create_flow(size_in, size_out, flow_checkpoint=None, flow_type=flow_type):
     c_out, h_out, w_out = size_out
     transform, (c_out, h_out, w_out) = create_transform(flow_type, size_in, size_out)
-    distribution = distributions.StandardNormal((c_out * h_out * w_out,))
-
-    flow = flows.Flow(transform, distribution)
+    if flow_type.casefold() == 'vae':
+        flow = transform
+    else:
+        distribution = distributions.StandardNormal((c_out * h_out * w_out,))
+        flow = flows.Flow(transform, distribution)
 
     if flow_checkpoint is not None:
         flow.load_state_dict(torch.load(flow_checkpoint))
 
     if args.load:
-        flow.load_state_dict(torch.load(os.path.join(directory, f'{args.outputname}_flow_last.pt')))
+        # flow.load_state_dict(torch.load(os.path.join(directory, f'{args.outputname}_flow_last.pt')))
+        flow.load_state_dict(torch.load(os.path.join(directory, os.path.join(directory, 'flow_best.pt'))))
 
     return flow
 
@@ -782,7 +877,6 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device):
         batch = batch.to(device)
 
         log_density = flow.log_prob(batch)
-
         loss = -nats_to_bits_per_dim(torch.mean(log_density))
 
         loss.backward()
@@ -808,9 +902,12 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device):
             fig, axs = plt.subplots(1, len(temperatures), figsize=(4 * len(temperatures), 4))
             for temperature, ax in zip(temperatures, axs.flat):
                 with torch.no_grad():
-                    noise = flow._distribution.sample(64) * temperature
-                    samples, _ = flow._transform.inverse(noise)
-                    samples = Preprocess(num_bits).inverse(samples)
+                    if args.model.casefold() == 'vae':
+                        samples = flow.sample(64)
+                    else:
+                        noise = flow._distribution.sample(64) * temperature
+                        samples, _ = flow._transform.inverse(noise)
+                        samples = Preprocess(num_bits).inverse(samples)
 
                 autils.imshow(make_grid(samples, nrow=8), ax)
                 # n_conv = NByOneStandardConv(3)
@@ -892,6 +989,7 @@ def evaluate_flow(flow, val_dataset, dataset_dims, device, anomaly_dataset=None)
     def log_prob_fn(batch):
         return flow.log_prob(batch.to(device))
 
+    # TODO: for VAE you need to get a les biased estimate for this
     val_log_prob = autils.eval_log_density(log_prob_fn=log_prob_fn,
                                            data_loader=val_loader)
     val_log_prob = nats_to_bits_per_dim(val_log_prob)
@@ -901,7 +999,17 @@ def evaluate_flow(flow, val_dataset, dataset_dims, device, anomaly_dataset=None)
         anomaly_log_prob = autils.eval_log_density(log_prob_fn=log_prob_fn,
                                                    data_loader=val_loader)
         anomaly_log_prob = nats_to_bits_per_dim(anomaly_log_prob)
-        print(anomaly_log_prob)
+        print(f'AD log prob {anomaly_log_prob}')
+
+    with torch.no_grad():
+        gen_batch_size = 1000
+        n_gen_batch = int(args.n_gen / gen_batch_size)
+        top_dir = f'/scratch/{dataset}_{num_bits}_{args.model}_generated'
+        os.makedirs(top_dir, exist_ok=True)
+        for j in range(n_gen_batch):
+            samples = flow.sample(gen_batch_size)
+            images = Preprocess(num_bits).inverse(samples)
+            [save_image(image, f'{top_dir}/_{i}_{j}.jpg') for i, image in enumerate(images)]
 
 
 def train_and_generate_images():

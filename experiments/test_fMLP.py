@@ -103,8 +103,8 @@ def checkerboard_test():
     activ_kwargs = {}
     # activ = PiecewiseRationalQuadraticCDF
     # activ_kwargs = {'shape': hs, 'tail_bound': 4., 'tails': 'linear', 'num_bins': 10}
-    activ = sur_flows.SPLEEN
-    activ_kwargs = {'tail_bound': 4., 'tails': 'linear', 'num_bins': 5}
+    # activ = sur_flows.SPLEEN
+    # activ_kwargs = {'tail_bound': 4., 'tails': 'linear', 'num_bins': 5}
     direct_inference = False
     # def decoder(in_nodes, out_nodes):
     #     bd2 = nflows.distributions.StandardNormal([in_nodes])

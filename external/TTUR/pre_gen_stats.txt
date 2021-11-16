@@ -14,11 +14,11 @@ datasets=(cifar-10-fast)
 num_bits=(5 8)
 
 srun singularity exec --nv -B /home/users/k/kleins/scratch/images/:/scratch/ /home/users/k/kleins/MLproject/surVAE/container/pytorch.sif\
-	python3 /home/users/k/kleins/MLproject/surVAE/TTUR/dump_images.py \
+	python3 /home/users/k/kleins/MLproject/surVAE/external/TTUR/dump_images.py \
 	 --dataset ${datasets[`expr ${SLURM_ARRAY_TASK_ID} / 2 % 1`]} \
 	 --num_bits ${num_bits[`expr ${SLURM_ARRAY_TASK_ID} / 1 % 2`]}
 
 srun singularity exec --nv -B /home/users/k/kleins/scratch/images/:/scratch/ /home/users/k/kleins/MLproject/surVAE/container/tensorflow_1.15.sif\
-	python3 /home/users/k/kleins/MLproject/surVAE/TTUR/precalcluate_stats.py \
+	python3 /home/users/k/kleins/MLproject/surVAE/external/TTUR/precalcluate_stats.py \
 	 ${datasets[`expr ${SLURM_ARRAY_TASK_ID} / 2 % 1`]}_${num_bits[`expr ${SLURM_ARRAY_TASK_ID} / 2 % 1`]} \
 	 ${datasets[`expr ${SLURM_ARRAY_TASK_ID} / 2 % 1`]}_${num_bits[`expr ${SLURM_ARRAY_TASK_ID} / 1 % 2`]}.npz
