@@ -682,7 +682,7 @@ def create_transform(flow_type, size_in, size_out):
             # else:
             #     MLP = [nn.Linear(post_conv_size, MLP_width)] + MLP + [nn.Linear(MLP_width, latent_size * 2)]
             #     return CNN + [nn.Flatten()] + MLP
-            if direction == -1: 
+            if direction == -1:
                 MLP_width = 512
                 MLP = [nn.Linear(latent_size, MLP_width),
                        nn.ReLU(),
@@ -903,7 +903,7 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device):
             for temperature, ax in zip(temperatures, axs.flat):
                 with torch.no_grad():
                     if args.model.casefold() == 'vae':
-                        samples = flow.sample(64)
+                        samples = flow.sample(64, temperature=temperature)
                     else:
                         noise = flow._distribution.sample(64) * temperature
                         samples, _ = flow._transform.inverse(noise)
@@ -919,6 +919,19 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device):
             summary_writer.add_figure(tag='samples', figure=fig, global_step=step)
             fig.savefig(svo.save_name(f'samples_{step}.png'))
             plt.close(fig)
+
+            if args.model.casefold() == 'vae':
+                fig, axs = plt.subplots(1, 2, figsize=(4 * len(temperatures), 4))
+                preprocess_transform = transforms.AffineScalarTransform(scale=1. / 2 ** num_bits,
+                                                                        shift=-0.5)
+                ta, _ = preprocess_transform(batch[:64])
+                ta += 0.5
+                taprime = flow.autoencode(batch[:64])
+                autils.imshow(make_grid(ta, nrow=8), axs[0])
+                autils.imshow(make_grid(taprime, nrow=8), axs[1])
+                summary_writer.add_figure(tag='recons', figure=fig, global_step=step)
+                fig.savefig(svo.save_name(f'reconstructions_{step}.png'))
+                plt.close(fig)
 
             # fig, axs = plt.subplots(1, 2, figsize=(4, 4))
             # autils.imshow(make_grid((batch[:64] / 2 ** num_bits - 0.5) * 2, nrow=8), axs[0])
