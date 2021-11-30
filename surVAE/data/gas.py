@@ -65,11 +65,9 @@ def save_splits():
 
 class GasDataset(Dataset):
     def __init__(self, split='train', frac=None):
-        numpy_file = utils.get_data_root(), 'gas', '{}.npy'.format(split)
-        print(numpy_file)
-        if not os.path.isfile(numpy_file):
+        path = os.path.join(utils.get_data_root(), 'gas', '{}.npy'.format(split))
+        if not os.path.isfile(path):
             save_splits()
-        path = os.path.join()
         self.data = np.load(path).astype(np.float32)
         self.n, self.dim = self.data.shape
         if frac is not None:
