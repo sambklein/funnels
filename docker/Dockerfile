@@ -11,7 +11,8 @@ RUN apt-get -qq -y update && \
         git \
         sudo \
         unzip \
-        p7zip-full
+        p7zip-full \
+        fastjar
 
 COPY docker/requirements.txt .
 COPY . .
