@@ -10,7 +10,8 @@ RUN apt-get -qq -y update && \
         curl \
         git \
         sudo \
-        unzip
+        unzip \
+        p7zip-full
 
 COPY docker/requirements.txt .
 COPY . .
