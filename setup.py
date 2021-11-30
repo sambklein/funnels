@@ -13,14 +13,15 @@ setup(
     author="Sam Klein",
     packages=find_packages(exclude=["tests"]),
     license="MIT",
-    install_requires=[
-        "matplotlib",
-        "numpy",
-        "tensorboard",
-        "torch",
-        "tqdm",
-        "scipy",
-        "pandas"
-    ],
+    # Commented because it messes with the container
+    # install_requires=[
+    #     "matplotlib",
+    #     "numpy",
+    #     "tensorboard",
+    #     "torch",
+    #     "tqdm",
+    #     "scipy",
+    #     "pandas"
+    # ],
     dependency_links=[],
 )

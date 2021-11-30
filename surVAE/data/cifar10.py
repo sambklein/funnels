@@ -1,9 +1,12 @@
+import os
+
 import torch
 from torchvision.datasets import CIFAR10
 
 
 class CIFAR10Fast(CIFAR10):
     def __init__(self, root, train=True, transform=None, target_transform=None, download=False):
+        os.makedirs(root, exist_ok=True)
         super().__init__(root, train, transform, target_transform, download)
 
         self.data = self.data.transpose((0, 3, 1, 2))  # HWC -> CHW.

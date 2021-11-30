@@ -19,7 +19,9 @@ class ImageNet32(UnlabelledImageFolder):
             self._download(root)
 
         img_dir = 'train' if train else 'val'
-        super(ImageNet32, self).__init__(os.path.join(root, img_dir),
+        directory = os.path.join(root, img_dir)
+        os.makedirs(root, exist_ok=True)
+        super(ImageNet32, self).__init__(directory,
                                          transform=transform)
 
     def _download(self, root):

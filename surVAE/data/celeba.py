@@ -50,6 +50,7 @@ class CelebAHQ(CelebA):
 
     def __init__(self, root, transform=None, train=True, download=False):
         self.train = train
+        os.makedirs(root, exist_ok=True)
         super().__init__(root, transform=transform, download=download)
 
     @property
