@@ -1,5 +1,4 @@
 -e .
-unzip
 pandas 
 h5py
 numpy
