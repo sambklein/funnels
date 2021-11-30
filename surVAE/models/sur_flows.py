@@ -1,4 +1,3 @@
-from geomloss import SamplesLoss
 from nflows import transforms
 from nflows import flows
 import nflows
@@ -151,10 +150,9 @@ def product_except_batch(x):
 
 
 class SurFlow(flows.Flow):
-    def __init__(self, transform, distribution, embedding_net=None, decoder=None, ot=False):
+    def __init__(self, transform, distribution, embedding_net=None, decoder=None):
         super(SurFlow, self).__init__(transform, distribution, embedding_net=embedding_net)
         self.decoder = decoder
-        self.ot = ot
 
     def _sample(self, num_samples, context):
         if self.decoder is None:
@@ -166,13 +164,7 @@ class SurFlow(flows.Flow):
     def _log_prob(self, inputs, context):
         embedded_context = self._embedding_net(context)
         noise, logabsdet = self._transform(inputs, context=embedded_context)
-        if self.ot:
-            samples = self._distribution.sample(inputs.shape[0])
-            log_prob = self._distribution.log_prob(noise, context=embedded_context)
-            log_prob -= SamplesLoss('sinkhorn', scaling=0.7, blur=0.01)(samples, inputs) * 10
-            # log_prob = - SamplesLoss('sinkhorn', scaling=0.7, blur=0.01)(samples, inputs)
-        else:
-            log_prob = self._distribution.log_prob(noise, context=embedded_context)
+        log_prob = self._distribution.log_prob(noise, context=embedded_context)
         total_log_prob = log_prob + logabsdet
         # if self.decoder is not None:
         #     total_log_prob += self.decoder.log_prob(inputs, context=noise)
