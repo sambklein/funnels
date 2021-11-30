@@ -10,7 +10,7 @@ build_image_latest:
   tags:
     - docker-image-build
   only:
-    - master
+    - main
   except:
     - schedules
   script:
