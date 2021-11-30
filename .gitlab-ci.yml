@@ -16,7 +16,7 @@ build_image_latest:
   script:
     - "echo"
   variables:
-    TO: gitlab-registry.cern.ch/funnels/latest
+    TO: gitlab-registry.cern.ch/saklein/funnels/latest
     DOCKER_FILE: docker/Dockerfile
     FROM: pytorch/pytorch:${TORCH_VERSION}-${CUDA}
 
@@ -31,6 +31,6 @@ build_image_tag:
   script:
     - "echo"
   variables:
-    TO: gitlab-registry.cern.ch/funnels/tags:${CI_COMMIT_TAG}-pytorch${TORCH_VERSION}
+    TO: gitlab-registry.cern.ch/saklein/funnels/tags:${CI_COMMIT_TAG}-pytorch${TORCH_VERSION}
     DOCKER_FILE: docker/Dockerfile
     FROM: pytorch/pytorch:${TORCH_VERSION}-${CUDA}
