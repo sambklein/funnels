@@ -9,8 +9,6 @@ RUN apt-get -qq -y update && \
         wget \
         curl \
         git \
-        make \
-        texlive \
         sudo
 
 COPY requirements.txt .

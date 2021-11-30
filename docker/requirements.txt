@@ -1,12 +1,10 @@
-scikit-learn
+-e .
 pandas 
 h5py
 numpy
 seaborn
 scipy
 jupyter
-scikit-hep
-uproot
 nflows
-awkward
--e ..
+tensorboardX
+tables
