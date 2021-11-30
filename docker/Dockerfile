@@ -11,7 +11,8 @@ RUN apt-get -qq -y update && \
         git \
         sudo
 
-COPY requirements.txt .
+COPY docker/requirements.txt .
+COPY . .
 
 RUN python3 -m pip install -r requirements.txt
 
