@@ -33,10 +33,10 @@ parser.add_argument('-n', '--outputname', type=str, default='local',
                     help='Set the output name directory')
 
 # data
-parser.add_argument('--dataset_name', type=str, default='power',
+parser.add_argument('--dataset_name', type=str, default='gas',
                     choices=['power', 'gas', 'hepmass', 'miniboone', 'bsds300'],
                     help='Name of dataset to use.')
-parser.add_argument('--train_batch_size', type=int, default=64,
+parser.add_argument('--train_batch_size', type=int, default=512,
                     help='Size of batch used for training.')
 parser.add_argument('--val_frac', type=float, default=1.,
                     help='Fraction of validation set to use.')
@@ -44,11 +44,11 @@ parser.add_argument('--val_batch_size', type=int, default=512,
                     help='Size of batch used for validation.')
 
 # optimization
-parser.add_argument('--learning_rate', type=float, default=3e-4,
+parser.add_argument('--learning_rate', type=float, default=0.0005,
                     help='Learning rate for optimizer.')
 # parser.add_argument('--num_training_steps', type=int, default=200000,
 #                     help='Number of total training steps.')
-parser.add_argument('--num_training_steps', type=int, default=500,
+parser.add_argument('--num_training_steps', type=int, default=2000,
                     help='Number of total training steps.')
 parser.add_argument('--anneal_learning_rate', type=int, default=1,
                     choices=[0, 1],
@@ -56,9 +56,18 @@ parser.add_argument('--anneal_learning_rate', type=int, default=1,
 parser.add_argument('--grad_norm_clip_value', type=float, default=5.,
                     help='Value by which to clip norm of gradients.')
 
+# VAE details
+parser.add_argument('--vae', type=int, default=2, help='Train a vae?')
+parser.add_argument('--vae_width', type=int, default=512, help='VAE encoder/decoder width')
+parser.add_argument('--vae_depth', type=int, default=2, help='VAE encoder/decoder depth')
+parser.add_argument('--vae_drp', type=float, default=0.0, help='Dropout in VAE')
+parser.add_argument('--vae_batch_norm', type=int, default=0, help='Use batch norm')
+parser.add_argument('--vae_layer_norm', type=int, default=0, help='Use layer norm')
+
+# MLP details
+parser.add_argument('--mlp', type=int, default=2, help='Train a vae?')
+
 # flow details
-parser.add_argument('--vae', type=int, default=2,
-                    help='Train a vae?')
 parser.add_argument('--base_transform_type', type=str, default='vae',
                     choices=['affine-coupling', 'quadratic-coupling', 'rq-coupling',
                              'affine-autoregressive', 'quadratic-autoregressive',
@@ -94,7 +103,7 @@ parser.add_argument('--cond_gauss', type=int, default=1,
                     help='Whether to add a single flow layer or not.')
 
 # logging and checkpoints
-parser.add_argument('--monitor_interval', type=int, default=250,
+parser.add_argument('--monitor_interval', type=int, default=500,
                     help='Interval in steps at which to report training stats.')
 
 # reproducibility
@@ -355,11 +364,47 @@ def create_transform(inp_dim, context_features=None, funnel=False, base_transfor
 # create model
 if args.vae:
     # TODO: kwargs!!
-    depth = 4
-    width = 256
+    depth = args.vae_depth
+    width = args.vae_width
     # layers = [512, 512, 512]
     layers = [width] * depth
-    flow = VAE(features, features - args.vae, layers)
+    flow = VAE(features, features - args.vae, layers, dropout=args.vae_drp, batch_norm=args.vae_batch_norm,
+               layer_norm=args.vae_layer_norm)
+elif args.mlp:
+    def createMLP(features):
+        activ = sur_flows.SPLEEN
+        activ_kwargs = {'tail_bound': 4., 'tails': 'linear', 'num_bins': 10}
+        # transform_list = [
+        #     sur_flows.InferenceMLP(features, 40),
+        #     activ(**activ_kwargs),
+        #     sur_flows.InferenceMLP(40, 30),
+        #     activ(**activ_kwargs),
+        #     sur_flows.InferenceMLP(30, 20),
+        # ]
+        # return transforms.CompositeTransform(transform_list)
+        transform_list = [
+            sur_flows.InferenceMLP(features, 55),
+            activ(**activ_kwargs),
+            sur_flows.InferenceMLP(55, 50),
+            activ(**activ_kwargs),
+            sur_flows.InferenceMLP(50, 40),
+        ]
+        # return transforms.CompositeTransform(transform_list)
+        # transform_list = [
+        #     transforms.LULinear(features),
+        #     transforms.RandomPermutation(features=features),
+        #     activ(**activ_kwargs),
+        #     transforms.LULinear(features),
+        #     activ(**activ_kwargs),
+        #     transforms.LULinear(features),
+        # ]
+        return transforms.CompositeTransform(transform_list)
+
+
+    transform = createMLP(features)
+    distribution = distributions.StandardNormal((20,))
+    flow = flows.Flow(transform, distribution).to(device)
+
 else:
     if args.funnel >= 0:
         distribution = distributions.StandardNormal((int(features - args.funnel),))
@@ -406,6 +451,8 @@ for step in tbar:
     batch = next(train_generator).to(device)
     log_density = flow.log_prob(batch)
     loss = - torch.mean(log_density)
+    if loss.isnan():
+        raise Exception('Loss is Nan.')
     loss.backward()
     if args.grad_norm_clip_value is not None:
         clip_grad_norm_(flow.parameters(), args.grad_norm_clip_value)

@@ -15,33 +15,34 @@ class transform(nn.Module):
         self.latent_size = latent_size
 
     def forward(self, data):
-        z_mean, z_log_sigma = self.encoder(data).split(self.latent_size, dim=1)
+        z_mean, z_log_sigma = self.encoder(data)
         epsilon = torch.normal(mean=torch.zeros_like(z_mean), std=torch.ones_like(z_mean))
         return z_mean + torch.exp(z_log_sigma) * epsilon
 
     def inverse(self, data):
-        return self.decoder(data), torch.zeros(data.shape[0])
+        x_prime, log_var = self.decoder(data)
+        return x_prime, torch.zeros(data.shape[0])
 
 
 class VAE(nn.Module):
 
     def __init__(self, input_dim, latent_size, layers, activation=torch.relu, encoder=None, decoder=None,
-                 preprocess=None):
+                 preprocess=None, dropout=0.0, batch_norm=False, layer_norm=False):
         super(VAE, self).__init__()
         self.latent_size = latent_size
         self.preprocess = preprocess
         if encoder is None:
-            self.encoder = dense_net(input_dim, latent_size * 2, layers=layers, int_activ=activation)
+            self.encoder = dense_net(input_dim, latent_size, layers=layers, int_activ=activation, drp=dropout,
+                                     vae=True, batch_norm=batch_norm, layer_norm=layer_norm)
         else:
             self.encoder = encoder
         if decoder is None:
-            self.decoder = dense_net(latent_size, input_dim, layers=layers, int_activ=activation)
+            self.decoder = dense_net(latent_size, input_dim, layers=layers, int_activ=activation, drp=dropout, vae=True,
+                                     batch_norm=batch_norm, layer_norm=layer_norm)
         else:
             self.decoder = decoder
         self.recon_loss = nn.MSELoss(reduce=False)
         self._transform = transform(self.encoder, self.decoder, latent_size)
-
-        self.log_scale = nn.Parameter(torch.Tensor([0.0]))
 
     def transform_to_noise(self, data):
         return self._transform(data)
@@ -49,8 +50,14 @@ class VAE(nn.Module):
     def set_preprocessing(self, preprocess):
         self.preprocess = preprocess
 
-    def likelihood(self, x_prime, log_scale, x):
+    def get_scale(self, log_scale):
         scale = log_scale.exp()
+        if len(scale) > 1:
+            scale = scale.unsqueeze(0).repeat(32, 32, 1).transpose(2, 0)
+        return scale
+
+    def likelihood(self, x_prime, log_scale, x):
+        scale = self.get_scale(log_scale)
         return torch.distributions.Normal(x_prime, scale).log_prob(x).view(x.shape[0], -1).sum(-1)
 
     def kl_divergence(self, z, mu, std):
@@ -64,36 +71,35 @@ class VAE(nn.Module):
         kl = kl.sum(-1)
         return kl
 
+    def get_encoding(self, data):
+        enc = self.encoder(data)
+        if not isinstance(enc, tuple):
+            z_mean, z_log_sigma = enc.split(self.latent_size, dim=1)
+        else:
+            z_mean, z_log_sigma = enc
+        return z_mean, z_log_sigma
+
     def log_prob(self, data):
         if self.preprocess is not None:
             data, prep_likelihood = self.preprocess(data)
         else:
             prep_likelihood = 0
-        # z_mean, z_log_sigma = self.encoder(data).split(self.latent_size, dim=1)
-        # kl_loss = 1 + z_log_sigma - z_mean.square() - z_log_sigma.exp()
-        # kl_loss = torch.sum(kl_loss, dim=1)
-        # kl_loss = -0.5 * kl_loss
-        #
-        # x_prime = self.sample_dec([z_mean, (z_log_sigma / 2).exp()])
-        # per_sample_likelihood = self.likelihood(x_prime, self.log_scale, data + 0.5)
-        #
-        # # TODO: only add if self.training is False?
-        # return per_sample_likelihood - kl_loss + prep_likelihood
-        z_mean, z_log_sigma = self.encoder(data).split(self.latent_size, dim=1)
+
+        z_mean, z_log_sigma = self.get_encoding(data)
         std = (z_log_sigma / 2).exp()
         q = torch.distributions.Normal(z_mean, std)
         z = q.rsample()
         kl_loss = self.kl_divergence(z, z_mean, std)
 
-        x_prime = self.decoder(z)
-        per_sample_likelihood = self.likelihood(x_prime, self.log_scale, data + 0.5)
+        x_prime, log_scale = self.decoder(z)
+        per_sample_likelihood = self.likelihood(x_prime, log_scale, data + 0.5)
 
         # TODO: only add if self.training is False?
         return per_sample_likelihood - kl_loss + prep_likelihood
 
     def autoencode(self, data):
         data, prep_likelihood = self.preprocess(data)
-        z_mean, z_log_sigma = self.encoder(data).split(self.latent_size, dim=1)
+        z_mean, z_log_sigma = self.get_encoding(data)
         return self.sample_dec([z_mean, (z_log_sigma / 2).exp()])
 
     def forward(self, *args):
@@ -105,11 +111,13 @@ class VAE(nn.Module):
         return z_mean + torch.exp(z_log_sigma) * epsilon
 
     def decode(self, sample):
-        return torch.distributions.Normal(self.decoder(sample), self.log_scale).sample([1])[0]
+        mu, log_scale = self.decoder(sample)
+        std = self.get_scale(log_scale)
+        return torch.distributions.Normal(mu, std).sample([1])[0]
 
     def sample_dec(self, encoding):
         # return self.decoder(self.base_dist_sample(encoding))
-        return self.decoder(self.base_dist_sample(encoding))
+        return self.decode(self.base_dist_sample(encoding))
 
     def sample(self, num, temperature=1):
-        return self.decoder(StandardNormal([self.latent_size]).sample(num) * temperature)
+        return self.decode(StandardNormal([self.latent_size]).sample(num) * temperature)

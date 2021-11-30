@@ -15,7 +15,7 @@ from torchvision.utils import make_grid, save_image
 
 # def config():
 # Saving
-from surVAE.models import ReverseSqueezeTransform, util_transforms
+from surVAE.models import ReverseSqueezeTransform, util_transforms, sur_flows
 from surVAE.models.VAE import VAE
 from surVAE.models.sur_flows import NByOneConv, SurNSF, surRqNSF, NByOneSlice, NByOneStandardConv, TanhLayer, LeakyRelu, \
     NByOneInnConv, SurConv
@@ -43,6 +43,8 @@ def parse_args():
     # Model set up
     parser.add_argument('--model', type=str, default='VAE',
                         help='The dimension of the input data.')
+    parser.add_argument('--latent_size', type=int, default=4,
+                        help='The size of the VAE latent size.')
     parser.add_argument('--slice', type=int, default=2,
                         help='Use a funnel or slice the tensor?')
     parser.add_argument('--funnel_first', type=int, default=0,
@@ -568,12 +570,6 @@ def create_transform(flow_type, size_in, size_out):
                     transforms.OneByOneConvolution(c)]
                 if squeeze:
                     if (args.funnel_first == 2) and (level == 0):
-                        # funnel_model, width = funnel_conv(c, level_hidden_channels, w)
-                        # layer_transform = [squeeze_transform, transforms.OneByOneConvolution(c),
-                        #                    funnel_model] + layer_transform
-                        # # w = int((w - w % conv_width) * (conv_width - 1) / conv_width)
-                        # w = width
-                        # h = w
                         funnel_model, width = funnel_conv(c, level_hidden_channels, w)
                         funnel_model_2, width = funnel_conv(c, level_hidden_channels, width)
                         w = width
@@ -587,6 +583,10 @@ def create_transform(flow_type, size_in, size_out):
 
                 if args.funnel_first == 0:
                     if level < 2:
+                        # TODO: the results you have in the abstract are with this compression!!
+                        # if level < 1:
+                        if level == 1:
+                            args.slice = 2
                         # if level == 0:
                         funnel_model, width = funnel_conv(c, level_hidden_channels, w)
                         all_transforms += [funnel_model]
@@ -636,14 +636,74 @@ def create_transform(flow_type, size_in, size_out):
             output_shape=(c * h * w,)
         ))
 
+    elif flow_type == 'fMLP':
+        activ = sur_flows.SPLEEN
+        activ_kwargs = {'tail_bound': 4., 'tails': 'linear', 'num_bins': 5}
+        direct_inference = False
+        hs = 512
+        inp_dim = c * h * w
+        out_dim = 20
+        decoder = None
+        transform_list = [
+            sur_flows.FlattenTransform(c, h, w),
+            sur_flows.fMLP(inp_dim, hs, direct_inference=direct_inference, decoder=decoder),
+            activ(**activ_kwargs),
+            sur_flows.fMLP(hs, hs, direct_inference=direct_inference, decoder=decoder),
+            activ(**activ_kwargs),
+            sur_flows.fMLP(hs, hs, direct_inference=direct_inference, decoder=decoder),
+            activ(**activ_kwargs),
+            sur_flows.fMLP(hs, out_dim, direct_inference=direct_inference, decoder=decoder),
+        ]
+        all_transforms = transform_list
+        c = out_dim
+        h = w = 1
+
+    elif flow_type == 'funnelMLP':
+        out_dim = args.latent_size
+        # out_dim = 192
+
+        def createMLP(features):
+            activ = sur_flows.SPLEEN
+            activ_kwargs = {'tail_bound': 2., 'tails': 'linear', 'num_bins': 10}
+            width = 256
+            depth = 3
+            transform_list = [
+                sur_flows.FlattenTransform(c, h, w),
+                sur_flows.InferenceMLP(features, 512, width=width, depth=depth),
+                activ(**activ_kwargs),
+                sur_flows.InferenceMLP(512, 256, width=width, depth=depth),
+                activ(**activ_kwargs),
+                sur_flows.InferenceMLP(256, 128, width=width, depth=depth),
+                activ(**activ_kwargs),
+                sur_flows.InferenceMLP(128, 64, width=width, depth=depth),
+                activ(**activ_kwargs),
+                sur_flows.InferenceMLP(64, out_dim, width=width, depth=depth),
+            ]
+            # transform_list = [
+            #     sur_flows.FlattenTransform(c, h, w),
+            #     sur_flows.InferenceMLP(features, 512, width=width, depth=depth),
+            #     activ(**activ_kwargs),
+            #     sur_flows.InferenceMLP(512, 256, width=width, depth=depth),
+            #     activ(**activ_kwargs),
+            #     sur_flows.InferenceMLP(256, 200, width=width, depth=depth),
+            #     activ(**activ_kwargs),
+            #     sur_flows.InferenceMLP(200, 195, width=width, depth=depth),
+            #     activ(**activ_kwargs),
+            #     sur_flows.InferenceMLP(195, out_dim, width=width, depth=depth),
+            # ]
+            return transform_list
+
+        all_transforms = createMLP(c * h * w)
+        c = out_dim
+        h = w = 1
+
     elif flow_type == 'VAE':
         width = 2
         stride = 1
         n_chan = c
         padding = 0
         MLP_width = 512
-        # TODO: need to infer this to match that of the Funnel
-        latent_size = 16
+        latent_size = args.latent_size
         conv_params = {'in_channels': n_chan, 'out_channels': n_chan, 'kernel_size': width, 'stride': stride,
                        'padding': padding}
         # post_conv_width = w / (width ** 2)
@@ -660,40 +720,28 @@ def create_transform(flow_type, size_in, size_out):
                 return x.view(x.shape[0], *self.shape)
 
         def get_model(direction=1):
-            # # TODO: the CNN part is TINY! it has very few parameters and so you are being unfair ie) very few parameters for lots of compression RESNET?
-            # CNN = [nn.Conv2d(**conv_params),
-            #        nn.ZeroPad2d((0, 1, 0, 1)),
-            #        nn.ReLU(),
-            #        nn.Conv2d(**conv_params),
-            #        nn.ZeroPad2d((0, 1, 0, 1)),
-            #        nn.ReLU(),
-            #        nn.Conv2d(**conv_params),
-            #        nn.ZeroPad2d((0, 1, 0, 1)),
-            #        nn.ReLU()]
-            #
-            # MLP = [nn.ReLU(),
-            #        nn.Linear(MLP_width, MLP_width),
-            #        nn.ReLU(),
-            #        nn.Linear(MLP_width, MLP_width),
-            #        nn.ReLU()]
-            # if direction == -1:
-            #     MLP = [nn.Linear(MLP_width, post_conv_size)] + MLP + [nn.Linear(latent_size, MLP_width)]
-            #     return MLP[::-1] + [Reshape((n_chan, post_conv_width, post_conv_width))] + CNN[::-1] # + [nn.Sigmoid()]
-            # else:
-            #     MLP = [nn.Linear(post_conv_size, MLP_width)] + MLP + [nn.Linear(MLP_width, latent_size * 2)]
-            #     return CNN + [nn.Flatten()] + MLP
             if direction == -1:
                 MLP_width = 512
-                MLP = [nn.Linear(latent_size, MLP_width),
-                       nn.ReLU(),
-                       nn.Linear(MLP_width, MLP_width),
-                       nn.ReLU(),
-                       nn.Linear(MLP_width, MLP_width),
-                       nn.ReLU(),
-                       nn.Linear(MLP_width, c * h * w),
-                       # nn.Sigmoid(),
-                       Reshape((c, h, w))]
-                return MLP
+
+                class decoder(nn.Module):
+                    def __init__(self):
+                        super(decoder, self).__init__()
+                        MLP_layers = [nn.Linear(latent_size, MLP_width),
+                                      nn.ReLU(),
+                                      nn.Linear(MLP_width, MLP_width),
+                                      nn.ReLU(),
+                                      nn.Linear(MLP_width, MLP_width),
+                                      nn.ReLU(),
+                                      nn.Linear(MLP_width, c * h * w),
+                                      # nn.Sigmoid(),
+                                      Reshape((c, h, w))]
+                        self.dec = nn.Sequential(*MLP_layers)
+                        self.log_scale = nn.Parameter(torch.Tensor([0.0]))
+
+                    def forward(self, data):
+                        return self.dec(data), self.log_scale
+
+                return decoder()
             else:
                 MLP_width = 512
                 MLP = [Reshape([c * h * w]),
@@ -706,12 +754,17 @@ def create_transform(flow_type, size_in, size_out):
                        nn.Linear(MLP_width, latent_size * 2)]
                 return MLP
 
-        encoder = nn.Sequential(
-            *get_model()
-        )
-        decoder = nn.Sequential(
-            *get_model(direction=-1)
-        )
+        if args.dataset == 'mnist':
+            encoder = nn.Sequential(
+                *get_model()
+            )
+            # decoder = nn.Sequential(
+            #     *get_model(direction=-1)
+            # )
+            decoder = get_model(direction=-1)
+        else:
+            encoder = util_transforms.ResNet18Enc(z_dim=latent_size)
+            decoder = util_transforms.ResNet18Dec(z_dim=latent_size, w=w)
 
         vae = VAE(0, latent_size, 0, encoder=encoder, decoder=decoder)
 
@@ -750,7 +803,6 @@ def create_transform(flow_type, size_in, size_out):
             all_transforms += [funnel_model]
             if w % 2 != 0:
                 all_transforms += [util_transforms.PaddingSurjection(1)]
-                w += 1
                 w += 1
             h = w
 
@@ -920,18 +972,21 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device):
             fig.savefig(svo.save_name(f'samples_{step}.png'))
             plt.close(fig)
 
+            fig, axs = plt.subplots(1, 2, figsize=(4 * len(temperatures), 4))
+            preprocess_transform = transforms.AffineScalarTransform(scale=1. / 2 ** num_bits,
+                                                                    shift=-0.5)
+            ta, _ = preprocess_transform(batch[:64])
+            ta += 0.5
             if args.model.casefold() == 'vae':
-                fig, axs = plt.subplots(1, 2, figsize=(4 * len(temperatures), 4))
-                preprocess_transform = transforms.AffineScalarTransform(scale=1. / 2 ** num_bits,
-                                                                        shift=-0.5)
-                ta, _ = preprocess_transform(batch[:64])
-                ta += 0.5
                 taprime = flow.autoencode(batch[:64])
-                autils.imshow(make_grid(ta, nrow=8), axs[0])
-                autils.imshow(make_grid(taprime, nrow=8), axs[1])
-                summary_writer.add_figure(tag='recons', figure=fig, global_step=step)
-                fig.savefig(svo.save_name(f'reconstructions_{step}.png'))
-                plt.close(fig)
+            else:
+                z = flow.transform_to_noise(batch[:64])
+                taprime, _ = flow._transform.inverse(z)
+            autils.imshow(make_grid(ta, nrow=8), axs[0])
+            autils.imshow(make_grid(taprime, nrow=8), axs[1])
+            summary_writer.add_figure(tag='recons', figure=fig, global_step=step)
+            fig.savefig(svo.save_name(f'reconstructions_{step}.png'))
+            plt.close(fig)
 
             # fig, axs = plt.subplots(1, 2, figsize=(4, 4))
             # autils.imshow(make_grid((batch[:64] / 2 ** num_bits - 0.5) * 2, nrow=8), axs[0])
@@ -989,7 +1044,7 @@ def evaluate_flow(flow, val_dataset, dataset_dims, device, anomaly_dataset=None)
                             num_workers=num_workers)
 
     if anomaly_dataset is not None:
-        anomaly_loader = DataLoader(dataset=val_dataset,
+        anomaly_loader = DataLoader(dataset=anomaly_dataset,
                                     batch_size=batch_size,
                                     num_workers=num_workers)
     else:
@@ -1010,14 +1065,14 @@ def evaluate_flow(flow, val_dataset, dataset_dims, device, anomaly_dataset=None)
 
     if anomaly_loader is not None:
         anomaly_log_prob = autils.eval_log_density(log_prob_fn=log_prob_fn,
-                                                   data_loader=val_loader)
+                                                   data_loader=anomaly_loader)
         anomaly_log_prob = nats_to_bits_per_dim(anomaly_log_prob)
         print(f'AD log prob {anomaly_log_prob}')
 
     with torch.no_grad():
         gen_batch_size = 1000
         n_gen_batch = int(args.n_gen / gen_batch_size)
-        top_dir = f'/scratch/{dataset}_{num_bits}_{args.model}_generated'
+        top_dir = f'/scratch/{dataset}_{num_bits}_{args.outputname}_generated'
         os.makedirs(top_dir, exist_ok=True)
         for j in range(n_gen_batch):
             samples = flow.sample(gen_batch_size)
@@ -1057,10 +1112,22 @@ def train_and_generate_images():
         train_flow(flow, train_dataset, val_dataset, (c, h, w), device)
     #
     if dataset == 'mnist':
-        anomaly_dataset, val_dataset, _ = get_image_data('fashion-mnist', num_bits, valid_frac=0.1)
+        anomaly_dataset, _, _ = get_image_data('fashion-mnist', num_bits, valid_frac=0.1)
     else:
         anomaly_dataset = None
     evaluate_flow(flow, val_dataset, (c, h, w), device, anomaly_dataset=anomaly_dataset)
+
+    # fig, axs = plt.subplots(1, 2, figsize=(4 * len(temperatures), 4))
+    # preprocess_transform = transforms.AffineScalarTransform(scale=1. / 2 ** num_bits,
+    #                                                         shift=-0.5)
+    # ta, _ = preprocess_transform(anomaly_dataset.data[:64].unsqueeze(1))
+    # ta += 0.5
+    # tap, _ = preprocess_transform(val_dataset.data[:64].unsqueeze(1))
+    # tap += 0.5
+    # autils.imshow(make_grid(tap, nrow=8), axs[0])
+    # autils.imshow(make_grid(ta, nrow=8), axs[1])
+    # fig.savefig(svo.save_name(f'fMNIST.png'))
+    # plt.close(fig)
 
 
 if __name__ == '__main__':

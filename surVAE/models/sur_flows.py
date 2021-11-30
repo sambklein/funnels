@@ -13,6 +13,41 @@ from surVAE.models.flows import get_transform, coupling_spline
 from surVAE.models.nn.MLPs import dense_net
 import numpy as np
 
+import torch
+
+
+class StochasticPermutation(nflows.transforms.Transform):
+    '''A stochastic permutation layer.'''
+
+    def __init__(self, dim=1):
+        super(StochasticPermutation, self).__init__()
+        self.register_buffer('buffer', torch.zeros(1))
+        self.dim = dim
+
+    def forward(self, x):
+        rand = torch.rand(x.shape[0], x.shape[self.dim], device=x.device)
+        permutation = rand.argsort(dim=1)
+        for d in range(1, self.dim):
+            permutation = permutation.unsqueeze(1)
+        for d in range(self.dim + 1, x.dim()):
+            permutation = permutation.unsqueeze(-1)
+        permutation = permutation.expand_as(x)
+        z = torch.gather(x, self.dim, permutation)
+        ldj = self.buffer.new_zeros(x.shape[0])
+        return z, ldj
+
+    def inverse(self, z):
+        rand = torch.rand(z.shape[0], z.shape[self.dim], device=z.device)
+        permutation = rand.argsort(dim=1)
+        for d in range(1, self.dim):
+            permutation = permutation.unsqueeze(1)
+        for d in range(self.dim + 1, z.dim()):
+            permutation = permutation.unsqueeze(-1)
+        permutation = permutation.expand_as(z)
+        x = torch.gather(z, self.dim, permutation)
+        ldj = self.buffer.new_zeros(x.shape[0])
+        return x, ldj
+
 
 def not_an_image_exception():
     raise Exception('Convolutions only work on images, need a channel dimension even if there is only one channel.')
@@ -92,6 +127,23 @@ class IdentityTransform(nflows.transforms.Transform):
         return inputs, torch.zeros(inputs.shape[0]).to(inputs.device)
 
 
+class FlattenTransform(nflows.transforms.Transform):
+
+    def __init__(self, c, h, w, *args, **kwargs):
+        super(FlattenTransform, self).__init__(*args, **kwargs)
+        self.c = c
+        self.h = h
+        self.w = w
+
+    def forward(self, inputs, context=None):
+        batch_size = inputs.shape[0]
+        return inputs.view(batch_size, -1), torch.zeros(batch_size).to(inputs.device)
+
+    def inverse(self, inputs, context=None):
+        batch_size = inputs.shape[0]
+        return inputs.view(batch_size, self.c, self.h, self.w), torch.zeros(batch_size).to(inputs.device)
+
+
 def product_except_batch(x):
     """Take product of all dimensions except the first."""
     batch_size = x.shape[0]
@@ -169,10 +221,8 @@ class fMLP(nflows.transforms.Transform):
                 self.decoder = ConditionalGaussianDecoder(in_nodes, out_nodes)
 
     def get_likelihood_contr(self):
-        n = self.F.weight.shape[1]
-        # return self.F.weight.abs().log().sum() / n
-        # return -((1 / self.F.weight).sum(1) / n).abs().log().sum()
         return self.F.weight.abs().log().sum(0).mean()
+        # return self.F.weight.abs().log().sum() / (self.F.weight.shape[0] * self.F.weight.shape[1])
 
     def forward(self, x, context=None):
         output = self.F(x)
@@ -193,6 +243,54 @@ class fMLP(nflows.transforms.Transform):
             samples, log_prob = self.decoder.sample_and_log_prob(1, context=z)
             likelihood_contr = self.get_likelihood_contr()
             return samples.squeeze(), log_prob.view(-1) + likelihood_contr
+
+
+class InferenceMLP(nflows.transforms.Transform):
+    def __init__(self, in_nodes, out_nodes, type='lu', width=128, depth=3):
+        super(InferenceMLP, self).__init__()
+        # TODO: implement 'lu' arg
+        self.perm = transforms.RandomPermutation(features=in_nodes)
+        self.F = transforms.LULinear(out_nodes)
+        self.V = nn.Linear(in_nodes - out_nodes, out_nodes)
+        self.decoder = ConditionalGaussianDecoder(in_nodes - out_nodes, out_nodes, width=width, depth=depth)
+        self.in_nodes = in_nodes
+        self.out_nodes = out_nodes
+
+    def forward(self, x, context=None):
+        x, l_rand = self.perm(x, context=context)
+        xPlus = x[:, :self.out_nodes]
+        lu_part, likelihood_contr = self.F(xPlus, context=context)
+        x_minus = x[:, self.out_nodes:]
+        cond_part = self.V(x_minus)
+        output = lu_part + cond_part
+        likelihood_cond = self.decoder.log_prob(x_minus, context=output)
+        return output, likelihood_contr + likelihood_cond + l_rand
+
+    def inverse(self, z, context=None):
+        samples, log_prob = self.decoder.sample_and_log_prob(1, context=z)
+        cond_part = self.V(samples.squeeze())
+        x, like = self.F.inverse(z - cond_part, context=context)
+        x = torch.cat((x, samples.squeeze()), 1)
+        x, l_rand = self.perm.inverse(x, context=context)
+        return x, log_prob.view(-1) + like + l_rand
+
+
+class GenerativeMLP(nflows.transforms.Transform):
+    """
+    At the moment this is just a generative slice surjection.
+    """
+
+    def __init__(self, in_nodes, out_nodes, type='lu'):
+        super(GenerativeMLP, self).__init__()
+        self.in_nodes = in_nodes
+        self.decoder = ConditionalGaussianDecoder(out_nodes - in_nodes, in_nodes)
+
+    def forward(self, x, context=None):
+        samples, likelihood_contr = self.decoder.sample_and_log_prob(1, context=x)
+        return torch.cat((x, samples.squeeze()), 1), -likelihood_contr.view(-1)
+
+    def inverse(self, z, context=None):
+        return z[:, :self.in_nodes], torch.zeros(z.shape[0])
 
 
 class TanhLayer(nflows.transforms.Transform):
@@ -279,7 +377,7 @@ class NByOneStandardConv(nflows.transforms.Transform):
         self.fold = nn.Fold(output_size=(image_width, image_width), kernel_size=width, stride=self.stride,
                             padding=self.padding)
         # k_infer = 5
-        # self.gather_z = nn.Unfold(kernel_size=k_infer, stride=1, padding=2)
+        # self.gather_z = nn.Unfold(kernel_size=k_infer, stride=1, padding=2)\
         k_infer = 3
         self.gather_z = nn.Unfold(kernel_size=3, stride=1, padding=1)
         self.n_cond = num_channels * k_infer ** 2
@@ -334,9 +432,10 @@ class NByOneStandardConv(nflows.transforms.Transform):
         log_detJ = self.get_J().det().abs().log() * np.prod(z.shape[-2:])
         transformed_blocks = self.unfold(inputs).transpose(-2, -1)
         dropped_sections = transformed_blocks[..., self.mx]
+        tiles = self.gather_z(z).transpose(1, 2).reshape(-1, self.n_cond)
         cond_likelihood = self.decoder.log_prob(
             dropped_sections.view(-1, self.n_dropped),
-            context=self.gather_z(z).transpose(1, 2).reshape(-1, self.n_cond)
+            context=tiles
         )
         cond_likelihood = cond_likelihood.view(batch_size, -1).sum(-1)
         likelihood_contribution = log_detJ + cond_likelihood
@@ -408,43 +507,34 @@ class SurConv(nflows.transforms.Transform):
         self.n_dropped = num_channels * (width ** 2 - 1)
         # TODO: infer this
         self.output_image_size = image_width - 1
+        self.image_width = image_width
 
         mx = torch.ones(self.width ** 2 * self.num_channels + 1, dtype=torch.bool)
         mx[::self.width ** 2] = 0
         self.mx = mx[1:]
 
-        if gauss:
-            self.decoder = ConditionalGaussianDecoder(num_channels * (width ** 2), self.n_cond)
-            # self.decoder = ConditionalFixedDecoder(num_channels * (width ** 2 - 1), self.n_cond)
-        else:
-            self.decoder = self.get_one_dim_flow(num_channels * (width ** 2), self.n_cond, width, nstack,
-                                                 hidden_features, num_blocks, tail_bound,
-                                                 num_bins, tails, spline=spline)
-
-    def get_one_dim_flow(self, inp_dim, ncond, width, nstack, hidden_features, num_blocks, tail_bound, num_bins, tails,
-                         spline=True):
-        transform_list = []
-        for i in range(nstack):
-            if spline:
-                transform_list += [
-                    transforms.MaskedPiecewiseRationalQuadraticAutoregressiveTransform(inp_dim, hidden_features,
-                                                                                       num_blocks=num_blocks,
-                                                                                       tail_bound=tail_bound,
-                                                                                       num_bins=num_bins,
-                                                                                       tails=tails,
-                                                                                       context_features=ncond)]
-            else:
-                transform_list += [transforms.MaskedAffineAutoregressiveTransform(inp_dim, 128, num_blocks=4,
-                                                                                  context_features=width - 1)]
-
-            transform_list += [transforms.ReversePermutation(inp_dim)]
-
-        flow_transform = transforms.CompositeTransform(transform_list[:-1])
-        base_dist = nflows.distributions.StandardNormal([inp_dim])
-        return flows.Flow(flow_transform, base_dist)
+        # self.decoder = ConditionalGaussianDecoder(num_channels * (width ** 2), self.n_cond)
+        self.decoder = ConditionalFixedDecoder(num_channels * image_width ** 2,
+                                               num_channels * self.output_image_size ** 2, width=256)
 
     def get_J(self):
         return self.forward_convolution.weight[..., -1, -1]
+
+    # def forward(self, inputs, context=None):
+    #     if inputs.dim() != 4:
+    #         not_an_image_exception()
+    #     batch_size, c, h, w = inputs.shape
+    #     z = self.forward_convolution(inputs)
+    #     log_detJ = self.get_J().det().abs().log() * np.prod(z.shape[-2:])
+    #     dropped_sections = self.unfold(inputs).transpose(-2, -1).reshape(-1, self.n_dropped + self.num_channels)
+    #     tiles = self.gather_z(z).transpose(1, 2).reshape(-1, self.n_cond)
+    #     cond_likelihood = self.decoder.log_prob(
+    #         dropped_sections,
+    #         context=tiles
+    #     )
+    #     cond_likelihood = cond_likelihood.view(batch_size, -1).sum(-1)
+    #     likelihood_contribution = log_detJ + cond_likelihood
+    #     return z, likelihood_contribution
 
     def forward(self, inputs, context=None):
         if inputs.dim() != 4:
@@ -452,12 +542,10 @@ class SurConv(nflows.transforms.Transform):
         batch_size, c, h, w = inputs.shape
         z = self.forward_convolution(inputs)
         log_detJ = self.get_J().det().abs().log() * np.prod(z.shape[-2:])
-        dropped_sections = self.unfold(inputs).transpose(-2, -1)
         cond_likelihood = self.decoder.log_prob(
-            dropped_sections.reshape(-1, self.n_dropped + self.num_channels),
-            context=self.gather_z(z).transpose(1, 2).reshape(-1, self.n_cond)
+            inputs.reshape(batch_size, -1),
+            context=z.reshape(batch_size, -1)
         )
-        cond_likelihood = cond_likelihood.view(batch_size, -1).sum(-1)
         likelihood_contribution = log_detJ + cond_likelihood
         return z, likelihood_contribution
 
@@ -466,23 +554,34 @@ class SurConv(nflows.transforms.Transform):
         image = self.fold(x_preform.transpose(-2, -1))
         return image
 
+    # def inverse(self, z, context=None):
+    #     if z.dim() != 4:
+    #         not_an_image_exception()
+    #     batch_size, c, h, w = z.shape
+    #     reduc_samples = self.gather_z(z).transpose(1, 2).reshape(-1, self.n_cond)
+    #     samples, log_prob = self.decoder.sample_and_log_prob(
+    #         1, context=reduc_samples
+    #     )
+    #     dropped_sections = self.make_an_image(batch_size, samples)
+    #     consts = self.forward_convolution(dropped_sections)
+    #     inv_J = self.get_J().inverse()
+    #     transformed_sections = torch.einsum('mn,inkl->imkl', inv_J, z - consts)
+    #     x = self.make_an_image(batch_size, samples,
+    #                            transformed_sections.view(batch_size, self.num_channels,
+    #                                                      int(self.output_image_size ** 2)).transpose(1, 2))
+    #     # TODO: return the right likelihood
+    #     return x, torch.zeros(batch_size)
+
+    # 52173532_0
     def inverse(self, z, context=None):
         if z.dim() != 4:
             not_an_image_exception()
         batch_size, c, h, w = z.shape
-        reduc_samples = self.gather_z(z).transpose(1, 2).reshape(-1, self.n_cond)
         samples, log_prob = self.decoder.sample_and_log_prob(
-            1, context=reduc_samples
+            1, context=z.reshape(batch_size, -1)
         )
-        dropped_sections = self.make_an_image(batch_size, samples)
-        consts = self.forward_convolution(dropped_sections)
-        inv_J = self.get_J().inverse()
-        transformed_sections = torch.einsum('mn,inkl->imkl', inv_J, z - consts)
-        x = self.make_an_image(batch_size, samples,
-                               transformed_sections.view(batch_size, self.num_channels,
-                                                         int(self.output_image_size ** 2)).transpose(1, 2))
-        # TODO: return the right likelihood
-        return x, torch.zeros(batch_size)
+        return samples.reshape((batch_size, self.num_channels, self.image_width, self.image_width)), torch.zeros(
+            batch_size)
 
     def test_inverse(self, inputs):
         batch_size, c, h, w = inputs.shape
@@ -1021,7 +1120,6 @@ class ConditionalGaussianDecoder(nflows.distributions.ConditionalDiagonalNormal)
 
     def _log_prob(self, inputs, context):
         lp = super(ConditionalGaussianDecoder, self)._log_prob(inputs, context)
-        # TODO: clip likelihoods to see if it stop loss diverging
         return torch.clip(lp, min=-10000)
 
 

@@ -1,0 +1,36 @@
+variables:
+  TORCH_VERSION: 1.8.0
+  CUDA: cuda11.1-cudnn8-runtime
+
+stages:
+  - base_build
+
+build_image_latest:
+  stage: base_build
+  tags:
+    - docker-image-build
+  only:
+    - master
+  except:
+    - schedules
+  script:
+    - "echo"
+  variables:
+    TO: gitlab-registry.cern.ch/funnel/latest
+    DOCKER_FILE: docker/Dockerfile
+    FROM: pytorch/pytorch:${TORCH_VERSION}-${CUDA}
+
+build_image_tag:
+  stage: base_build
+  tags:
+    - docker-image-build
+  only:
+    - tags
+  except:
+    - schedules
+  script:
+    - "echo"
+  variables:
+    TO: gitlab-registry.cern.ch/funnel/tags:${CI_COMMIT_TAG}-pytorch${TORCH_VERSION}
+    DOCKER_FILE: docker/Dockerfile
+    FROM: pytorch/pytorch:${TORCH_VERSION}-${CUDA}
