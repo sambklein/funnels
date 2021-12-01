@@ -41,7 +41,7 @@ def parse_args():
     parser.add_argument('--n_gen', type=int, default=10000, help='Number of samples to generate for evaluation.')
 
     # Model set up
-    parser.add_argument('--model', type=str, default='VAE',
+    parser.add_argument('--model', type=str, default='funnel_conv',
                         help='The dimension of the input data.')
     parser.add_argument('--latent_size', type=int, default=4,
                         help='The size of the VAE latent size.')
@@ -49,7 +49,7 @@ def parse_args():
                         help='Use a funnel or slice the tensor?')
     parser.add_argument('--funnel_first', type=int, default=0,
                         help='The dimension of the input data.')
-    parser.add_argument('--n_funnels', type=int, default=3,
+    parser.add_argument('--n_funnels', type=int, default=1,
                         help='The number of funnel layers to apply.')
     parser.add_argument('--conv_width', type=int, default=2,
                         help='The width of the convolutional kernel to apply.')
