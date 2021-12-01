@@ -18,9 +18,9 @@ COPY docker/requirements.txt .
 COPY . .
 
 RUN bash -c 'echo -e $(pwd)'
-ENV PYTHONPATH=$(pwd)
+ENV PYTHONPATH=/workspace
 RUN cd /opt/conda/lib/python3.8/site-packages && \
-    python3 setup.py develop
+    python3 /workspace/setup.py develop
 
 RUN python3 -m pip install -r requirements.txt
 
