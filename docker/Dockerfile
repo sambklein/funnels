@@ -19,8 +19,8 @@ COPY . .
 
 RUN python3 -m pip install -r requirements.txt
 
-RUN mkdir python_install
-ENV PYTHONPATH=/workspace:/workspace/python_install:${PYTHONPATH}
-RUN python3 setup.py develop --install-dir python_install
+#RUN mkdir python_install
+#ENV PYTHONPATH=/workspace:/workspace/python_install:${PYTHONPATH}
+#RUN python3 setup.py develop --install-dir python_install
 
 EXPOSE 8888
