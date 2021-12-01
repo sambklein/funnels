@@ -1,5 +1,4 @@
--e .
-pandas 
+pandas
 h5py
 numpy
 seaborn

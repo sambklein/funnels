@@ -91,7 +91,7 @@ def parse_args():
                         help='Spline tail bound.')
 
     # Dataset and training parameters
-    parser.add_argument('--dataset', type=str, default='mnist',
+    parser.add_argument('--dataset', type=str, default='cifar-10-fast',
                         help='The name of the plane dataset on which to train.')
     # parser.add_argument('--dataset', type=str, default='imagenet-64-fast',
     #                     help='The name of the plane dataset on which to train.')

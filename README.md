@@ -9,3 +9,5 @@ tar -xvf surVAE/data/downloads/data.tar.gz
 mv surVAE/data/downloads/data/* surVAE/data/downloads/
 rm -r surVAE/data/downloads/data 
 ```
+
+The environment variable REPOROOT must be set to point to the top level of the repository.

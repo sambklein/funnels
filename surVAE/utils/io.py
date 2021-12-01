@@ -36,6 +36,10 @@ def get_data_root():
     return f'{get_top_dir()}/surVAE/data/downloads'
 
 
+class NoDataRootError(Exception):
+    """Exception to be thrown when data root doesn't exist."""
+    pass
+
 def get_top_dir():
     p = pathlib.Path().absolute()
     id = p.parts[:3][-1]
@@ -44,7 +48,13 @@ def get_top_dir():
     elif id == 'users':
         sv_ims = '/home/users/k/kleins/MLproject/surVAE'
     else:
-        raise ValueError('Unknown path for saving images {}'.format(p))
+        # raise ValueError('Unknown path for saving images {}'.format(p))
+        data_root_var = 'REPOROOT'
+        try:
+            return os.environ[data_root_var]
+        except KeyError:
+            raise NoDataRootError('Data root must be in environment variable {}, which'
+                                  ' doesn\'t exist.'.format(data_root_var))
     return sv_ims
 
 def get_data_root():

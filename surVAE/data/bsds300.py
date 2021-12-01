@@ -9,7 +9,7 @@ from surVAE.utils import get_data_root
 
 
 def load_bsds300():
-    path = os.path.join(get_data_root(), 'BSDS300', 'bsds300.hdf5')
+    path = os.path.join(get_data_root(), 'BSDS300', 'BSDS300.hdf5')
     file = h5py.File(path, 'r')
     return file['train'], file['validation'], file['test']
 

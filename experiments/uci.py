@@ -48,7 +48,7 @@ parser.add_argument('--learning_rate', type=float, default=0.0005,
                     help='Learning rate for optimizer.')
 # parser.add_argument('--num_training_steps', type=int, default=200000,
 #                     help='Number of total training steps.')
-parser.add_argument('--num_training_steps', type=int, default=2000,
+parser.add_argument('--num_training_steps', type=int, default=40000,
                     help='Number of total training steps.')
 parser.add_argument('--anneal_learning_rate', type=int, default=1,
                     choices=[0, 1],
@@ -404,7 +404,7 @@ elif args.mlp:
 
 
     transform = createMLP(features)
-    distribution = distributions.StandardNormal((20,))
+    distribution = distributions.StandardNormal((40,))
     flow = flows.Flow(transform, distribution).to(device)
 
 else:
