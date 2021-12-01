@@ -89,6 +89,8 @@ def save_splits():
 class HEPMASSDataset(Dataset):
     def __init__(self, split='train', frac=None):
         path = os.path.join(utils.get_data_root(), 'hepmass', '{}.npy'.format(split))
+        if not os.path.isfile(path):
+            save_splits()
         self.data = np.load(path).astype(np.float32)
         self.n, self.dim = self.data.shape
         if frac is not None:

@@ -33,7 +33,7 @@ parser.add_argument('-n', '--outputname', type=str, default='local',
                     help='Set the output name directory')
 
 # data
-parser.add_argument('--dataset_name', type=str, default='gas',
+parser.add_argument('--dataset_name', type=str, default='bsds300',
                     choices=['power', 'gas', 'hepmass', 'miniboone', 'bsds300'],
                     help='Name of dataset to use.')
 parser.add_argument('--train_batch_size', type=int, default=512,
@@ -57,7 +57,7 @@ parser.add_argument('--grad_norm_clip_value', type=float, default=5.,
                     help='Value by which to clip norm of gradients.')
 
 # VAE details
-parser.add_argument('--vae', type=int, default=2, help='Train a vae?')
+parser.add_argument('--vae', type=int, default=0, help='Train a vae?')
 parser.add_argument('--vae_width', type=int, default=512, help='VAE encoder/decoder width')
 parser.add_argument('--vae_depth', type=int, default=2, help='VAE encoder/decoder depth')
 parser.add_argument('--vae_drp', type=float, default=0.0, help='Dropout in VAE')
@@ -363,6 +363,7 @@ def create_transform(inp_dim, context_features=None, funnel=False, base_transfor
 
 # create model
 if args.vae:
+    print('Training a VAE')
     # TODO: kwargs!!
     depth = args.vae_depth
     width = args.vae_width
@@ -371,6 +372,7 @@ if args.vae:
     flow = VAE(features, features - args.vae, layers, dropout=args.vae_drp, batch_norm=args.vae_batch_norm,
                layer_norm=args.vae_layer_norm)
 elif args.mlp:
+    print('Training a F-MLP')
     def createMLP(features):
         activ = sur_flows.SPLEEN
         activ_kwargs = {'tail_bound': 4., 'tails': 'linear', 'num_bins': 10}
@@ -406,6 +408,7 @@ elif args.mlp:
     flow = flows.Flow(transform, distribution).to(device)
 
 else:
+    print('Training a flow or funnel.')
     if args.funnel >= 0:
         distribution = distributions.StandardNormal((int(features - args.funnel),))
     elif args.funnel == -1:

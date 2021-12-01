@@ -78,6 +78,8 @@ def print_shape_info():
 class PowerDataset(Dataset):
     def __init__(self, split='train', frac=None):
         path = os.path.join(utils.get_data_root(), 'power', '{}.npy'.format(split))
+        if not os.path.isfile(path):
+            save_splits()
         self.data = np.load(path).astype(np.float32)
         self.n, self.dim = self.data.shape
         if frac is not None:

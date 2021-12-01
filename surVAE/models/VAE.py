@@ -52,7 +52,7 @@ class VAE(nn.Module):
 
     def get_scale(self, log_scale):
         scale = log_scale.exp()
-        if len(scale) > 1:
+        if len(scale) == 3:
             scale = scale.unsqueeze(0).repeat(32, 32, 1).transpose(2, 0)
         return scale
 
