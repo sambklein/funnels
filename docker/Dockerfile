@@ -22,7 +22,8 @@ ENV PYTHONPATH=/workspace
 RUN cd /opt/conda/lib/python3.8/site-packages && \
     python3 /workspace/setup.py develop
 
-RUN cd ../../../../..
+RUN cd
+RUN cd /workspace/
 
 RUN python3 -m pip install -r requirements.txt
 
