@@ -17,6 +17,7 @@ RUN apt-get -qq -y update && \
 COPY docker/requirements.txt .
 COPY . .
 
+RUN bash -c 'echo -e $(pwd)'
 ENV PYTHONPATH=$(pwd)
 RUN cd /opt/conda/lib/python3.8/site-packages && \
     python3 setup.py develop
