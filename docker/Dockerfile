@@ -17,14 +17,12 @@ RUN apt-get -qq -y update && \
 COPY docker/requirements.txt .
 COPY . .
 
+RUN python3 -m pip install -r requirements.txt
+
 RUN bash -c 'echo -e $(pwd)'
+
 ENV PYTHONPATH=/workspace
 RUN cd /opt/conda/lib/python3.8/site-packages && \
     python3 /workspace/setup.py develop
-
-RUN cd
-RUN cd /workspace/
-
-RUN python3 -m pip install -r requirements.txt
 
 EXPOSE 8888
