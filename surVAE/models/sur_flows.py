@@ -238,31 +238,40 @@ class fMLP(nflows.transforms.Transform):
 
 
 class InferenceMLP(nflows.transforms.Transform):
-    def __init__(self, in_nodes, out_nodes, type='lu', width=128, depth=3):
+    def __init__(self, in_nodes, out_nodes, width=128, depth=3):
         super(InferenceMLP, self).__init__()
-        # TODO: implement 'lu' arg
         self.perm = transforms.RandomPermutation(features=in_nodes)
         self.F = transforms.LULinear(out_nodes)
-        self.V = nn.Linear(in_nodes - out_nodes, out_nodes)
-        self.decoder = ConditionalGaussianDecoder(in_nodes - out_nodes, out_nodes, width=width, depth=depth)
+        self.dim_reduc = in_nodes > out_nodes
+        if self.dim_reduc:
+            self.V = nn.Linear(in_nodes - out_nodes, out_nodes)
+            self.decoder = ConditionalGaussianDecoder(in_nodes - out_nodes, out_nodes, width=width, depth=depth)
         self.in_nodes = in_nodes
         self.out_nodes = out_nodes
 
     def forward(self, x, context=None):
         x, l_rand = self.perm(x, context=context)
         xPlus = x[:, :self.out_nodes]
-        lu_part, likelihood_contr = self.F(xPlus, context=context)
+        output, likelihood_contr = self.F(xPlus, context=context)
         x_minus = x[:, self.out_nodes:]
-        cond_part = self.V(x_minus)
-        output = lu_part + cond_part
-        likelihood_cond = self.decoder.log_prob(x_minus, context=output)
+        if self.dim_reduc:
+            cond_part = self.V(x_minus)
+            output = output + cond_part
+            likelihood_cond = self.decoder.log_prob(x_minus, context=output)
+        else:
+            likelihood_cond = 0
         return output, likelihood_contr + likelihood_cond + l_rand
 
     def inverse(self, z, context=None):
-        samples, log_prob = self.decoder.sample_and_log_prob(1, context=z)
-        cond_part = self.V(samples.squeeze())
+        if self.dim_reduc:
+            samples, log_prob = self.decoder.sample_and_log_prob(1, context=z)
+            cond_part = self.V(samples.squeeze())
+        else:
+            cond_part = 0
+            log_prob = torch.zeros(z.shape[0])
         x, like = self.F.inverse(z - cond_part, context=context)
-        x = torch.cat((x, samples.squeeze()), 1)
+        if self.dim_reduc:
+            x = torch.cat((x, samples.squeeze()), 1)
         x, l_rand = self.perm.inverse(x, context=context)
         return x, log_prob.view(-1) + like + l_rand
 

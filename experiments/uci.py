@@ -33,7 +33,7 @@ parser.add_argument('-n', '--outputname', type=str, default='local',
                     help='Set the output name directory')
 
 # data
-parser.add_argument('--dataset_name', type=str, default='bsds300',
+parser.add_argument('--dataset_name', type=str, default='gas',
                     choices=['power', 'gas', 'hepmass', 'miniboone', 'bsds300'],
                     help='Name of dataset to use.')
 parser.add_argument('--train_batch_size', type=int, default=512,
@@ -373,38 +373,24 @@ if args.vae:
                layer_norm=args.vae_layer_norm)
 elif args.mlp:
     print('Training a F-MLP')
+    ls = features - args.mlp
     def createMLP(features):
         activ = sur_flows.SPLEEN
         activ_kwargs = {'tail_bound': 4., 'tails': 'linear', 'num_bins': 10}
-        # transform_list = [
-        #     sur_flows.InferenceMLP(features, 40),
-        #     activ(**activ_kwargs),
-        #     sur_flows.InferenceMLP(40, 30),
-        #     activ(**activ_kwargs),
-        #     sur_flows.InferenceMLP(30, 20),
-        # ]
-        # return transforms.CompositeTransform(transform_list)
         transform_list = [
-            sur_flows.InferenceMLP(features, 55),
+            sur_flows.InferenceMLP(features, ls),
             activ(**activ_kwargs),
-            sur_flows.InferenceMLP(55, 50),
+            sur_flows.InferenceMLP(ls, ls),
             activ(**activ_kwargs),
-            sur_flows.InferenceMLP(50, 40),
+            sur_flows.InferenceMLP(ls, ls),
+            activ(**activ_kwargs),
+            sur_flows.InferenceMLP(ls, ls),
         ]
-        # return transforms.CompositeTransform(transform_list)
-        # transform_list = [
-        #     transforms.LULinear(features),
-        #     transforms.RandomPermutation(features=features),
-        #     activ(**activ_kwargs),
-        #     transforms.LULinear(features),
-        #     activ(**activ_kwargs),
-        #     transforms.LULinear(features),
-        # ]
         return transforms.CompositeTransform(transform_list)
 
 
     transform = createMLP(features)
-    distribution = distributions.StandardNormal((40,))
+    distribution = distributions.StandardNormal((ls,))
     flow = flows.Flow(transform, distribution).to(device)
 
 else:

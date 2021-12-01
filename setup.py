@@ -5,11 +5,10 @@ from setuptools import find_packages, setup
 
 setup(
     name="surVAE",
-    version='0.01',
+    version='0.1',
     description="Experiments for studying distribution matching.",
     # long_description=long_description,
     long_description_content_type='text/markdown',
-    # url="https://github.com/sambklein/distribution_matching",
     author="Sam Klein",
     packages=find_packages(exclude=["tests"]),
     license="MIT",

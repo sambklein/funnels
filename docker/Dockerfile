@@ -19,10 +19,8 @@ COPY . .
 
 RUN python3 -m pip install -r requirements.txt
 
-#RUN bash -c 'echo -e $(pwd)'
-#
-#ENV PYTHONPATH=/workspace
-#RUN cd /opt/conda/lib/python3.8/site-packages && \
-#    python3 /workspace/setup.py develop
-#
-#EXPOSE 8888
+RUN mkdir python_install
+ENV PYTHONPATH=/workspace:/workspace/python_install:${PYTHONPATH}
+RUN python3 setup.py develop --install-dir python_install
+
+EXPOSE 8888
