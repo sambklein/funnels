@@ -18,7 +18,7 @@ COPY docker/requirements.txt .
 COPY . .
 
 ENV PYTHONPATH=.
-RUN cd /usr/local/lib/python3.8/site-packages && \
+RUN cd /opt/conda/lib/python3.8/site-packages && \
     python3 setup.py develop
 
 RUN python3 -m pip install -r requirements.txt
