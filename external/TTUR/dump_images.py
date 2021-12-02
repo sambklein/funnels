@@ -15,7 +15,6 @@ def parse_args():
 
 
 def dump_images(dataset, num_bits):
-    # TODO: do you need the full training dataset?
     if dataset != 'mnist':
         save_dataset, _ = get_image_data(dataset, num_bits, train=False)
     else:

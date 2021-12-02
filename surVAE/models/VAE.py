@@ -24,6 +24,7 @@ class transform(nn.Module):
         return x_prime, torch.zeros(data.shape[0])
 
 
+# TODO: clean up the mess that this class has become
 class VAE(nn.Module):
 
     def __init__(self, input_dim, latent_size, layers, activation=torch.relu, encoder=None, decoder=None,
@@ -94,7 +95,6 @@ class VAE(nn.Module):
         x_prime, log_scale = self.decoder(z)
         per_sample_likelihood = self.likelihood(x_prime, log_scale, data + 0.5)
 
-        # TODO: only add if self.training is False?
         return per_sample_likelihood - kl_loss + prep_likelihood
 
     def autoencode(self, data):

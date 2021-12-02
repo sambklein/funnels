@@ -26,7 +26,6 @@ from surVAE.utils.io import get_timestamp, on_cluster, get_log_root, get_checkpo
 
 parser = argparse.ArgumentParser()
 
-# TODO: at present these aren't used
 parser.add_argument('-d', '--outputdir', type=str, default='uci_local',
                     help='Choose the base output directory')
 parser.add_argument('-n', '--outputname', type=str, default='local',
@@ -184,7 +183,6 @@ def make_generator(dropped_entries_shape, context_shape):
     base_transform_type = args.base_transform_type
     if (base_transform_type in ['rq-coupling', 'quadratic-coupling']) and (dropped_entries_shape[0] == 1):
         # If this is a 1D Flow it needs to be made autoregressive, it is the same thing in the end
-        # TODO: This is a terrible way to handle this
         base_transform_type = base_transform_type[:-8] + 'autoregressive'
     nh_fact = 4 if is_auto_r else 3
     # nh_fact = 3
@@ -198,9 +196,8 @@ def make_generator(dropped_entries_shape, context_shape):
         'num_flow_steps': int(args.num_flow_steps / nf_fact)
     }
     if args.cond_gauss:
-        # TODO: Need to stop this overfitting to outperform
-        # return sur_flows.ConditionalGaussianDecoder(dropped_entries_shape, context_shape)
-        return sur_flows.ConditionalFixedDecoder(dropped_entries_shape, context_shape)
+        return sur_flows.ConditionalGaussianDecoder(dropped_entries_shape, context_shape)
+        # return sur_flows.ConditionalFixedDecoder(dropped_entries_shape, context_shape)
     else:
         return sur_flows.make_generator(dropped_entries_shape, context_shape,
                                         transform_func=create_transform, transform_kwargs=transform_kwargs)

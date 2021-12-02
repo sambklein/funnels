@@ -52,9 +52,8 @@ def not_an_image_exception():
     raise Exception('Convolutions only work on images, need a channel dimension even if there is only one channel.')
 
 
-def convolving_not_possible():
-    # TODO: better error message...
-    raise RuntimeError('Cannot properly reshape images of this size for this convolution.')
+def convolving_not_possible(size):
+    raise RuntimeError(f'Cannot properly reshape images of {size} size for this convolution.')
 
 
 class get_net(nn.Module):
@@ -102,16 +101,14 @@ class SurNSF(nflows.transforms.Transform):
         output, jacobian = self.transform.forward(inputs[:, 1:].view(-1, self.features - 1),
                                                   context=input_dropped)
         likelihood_contribution = self.one_dim_flow.log_prob(input_dropped, context=output)
-        # return output, likelihood_contribution + output_likelihood
         return output, jacobian + likelihood_contribution
 
     def inverse(self, inputs, context=None):
         input_dropped = self.one_dim_flow.sample(1, context=inputs).squeeze().view(-1, 1)
-        input_mapped = self.transform.inverse(inputs, context=input_dropped)[0]
-        # TODO: this is wrong...
+        input_mapped, jacobian = self.transform.inverse(inputs, context=input_dropped)
         likelihood_contribution = self.one_dim_flow.log_prob(input_dropped.view(-1, 1), context=inputs)
         f_return = torch.cat((input_dropped, input_mapped), 1)
-        return f_return, likelihood_contribution
+        return f_return, jacobian + likelihood_contribution
 
 
 class IdentityTransform(nflows.transforms.Transform):
@@ -369,7 +366,6 @@ class NByOneStandardConv(nflows.transforms.Transform):
                  **kwargs):
         super(NByOneStandardConv, self).__init__()
 
-        # TODO: play with this for getting the transforms correct
         self.padding = 0
         self.stride = width
         self.forward_convolution = nn.Conv2d(num_channels, num_channels, width, stride=self.stride,
@@ -465,8 +461,8 @@ class NByOneStandardConv(nflows.transforms.Transform):
         x = self.make_an_image(batch_size, samples,
                                transformed_sections.view(batch_size, self.num_channels,
                                                          int(self.output_image_size ** 2)).transpose(1, 2))
-        # TODO: return the right likelihood
-        return x, torch.zeros(batch_size)
+        log_detJ = self.get_J().det().abs().log() * np.prod(z.shape[-2:])
+        return x, log_prob
 
     def test_inverse(self, inputs):
         batch_size, c, h, w = inputs.shape
@@ -506,7 +502,6 @@ class SurConv(nflows.transforms.Transform):
         self.num_channels = num_channels
         self.width = width
         self.n_dropped = num_channels * (width ** 2 - 1)
-        # TODO: infer this
         self.output_image_size = image_width - 1
         self.image_width = image_width
 
@@ -555,25 +550,6 @@ class SurConv(nflows.transforms.Transform):
         image = self.fold(x_preform.transpose(-2, -1))
         return image
 
-    # def inverse(self, z, context=None):
-    #     if z.dim() != 4:
-    #         not_an_image_exception()
-    #     batch_size, c, h, w = z.shape
-    #     reduc_samples = self.gather_z(z).transpose(1, 2).reshape(-1, self.n_cond)
-    #     samples, log_prob = self.decoder.sample_and_log_prob(
-    #         1, context=reduc_samples
-    #     )
-    #     dropped_sections = self.make_an_image(batch_size, samples)
-    #     consts = self.forward_convolution(dropped_sections)
-    #     inv_J = self.get_J().inverse()
-    #     transformed_sections = torch.einsum('mn,inkl->imkl', inv_J, z - consts)
-    #     x = self.make_an_image(batch_size, samples,
-    #                            transformed_sections.view(batch_size, self.num_channels,
-    #                                                      int(self.output_image_size ** 2)).transpose(1, 2))
-    #     # TODO: return the right likelihood
-    #     return x, torch.zeros(batch_size)
-
-    # 52173532_0
     def inverse(self, z, context=None):
         if z.dim() != 4:
             not_an_image_exception()
@@ -581,8 +557,7 @@ class SurConv(nflows.transforms.Transform):
         samples, log_prob = self.decoder.sample_and_log_prob(
             1, context=z.reshape(batch_size, -1)
         )
-        return samples.reshape((batch_size, self.num_channels, self.image_width, self.image_width)), torch.zeros(
-            batch_size)
+        return samples.reshape((batch_size, self.num_channels, self.image_width, self.image_width)), log_prob
 
     def test_inverse(self, inputs):
         batch_size, c, h, w = inputs.shape
@@ -868,7 +843,7 @@ class NByOneConv(nflows.transforms.Transform):
             not_an_image_exception()
         batch_size, c, h, w = inputs.shape
         # if h * w % self.width:
-        #     convolving_not_possible()
+        #     convolving_not_possible((h, w))
         # new_w = w - int(w / self.width)
         new_w = w - w // self.width
         output = torch.zeros((c, batch_size, h, new_w))
@@ -928,10 +903,7 @@ class NByOneConv(nflows.transforms.Transform):
         return output.permute(1, 0, 2, 3), likelihood_contribution
 
     def inverse(self, inputs, context=None):
-        batch_size, c, h, w = inputs.shape
-        # TODO: you shouldn't be setting this by hand, but its the end of the day, so...
         n_w_to_take = 0  # w - w % (self.width - 1)
-        # baggage = inputs[..., n_w_to_take:]
         baggage = torch.zeros_like(inputs)[..., :n_w_to_take]
         output, likelihood = self._unpadded_inverse(inputs, context=context)
         output = torch.cat((output, baggage), -1)
@@ -1334,7 +1306,6 @@ class BaseCouplingFunnelAlt(nn.Module):
         self.generator = generator_function(dropped_entries_shape, context_shape)
 
     def forward(self, inputs, context=None):
-        # TODO: this has to be done with the real context!! At the moment it is a slice surjection
         faux_output, log_contr = self.coupling_inn.forward(inputs, context=context)
         output = faux_output[:, self.keep_mask, ...]
         likelihood = self.generator.log_prob(faux_output[:, ~self.keep_mask, ...], context=output)

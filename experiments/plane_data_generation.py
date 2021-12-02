@@ -89,7 +89,6 @@ def checkerboard_test():
     out_dim = inp_dim - args.num_add * args.add_sur
     nstack = args.nstack + args.num_add * (1 - args.add_sur)
 
-    # TODO: needs to be a kwarg
     spline = args.splines
 
     # Set up and define the model

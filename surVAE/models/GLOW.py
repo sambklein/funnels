@@ -168,15 +168,12 @@ def add_glow(size_in, levels, hidden_channels, context_channels=None, steps_per_
     return all_transforms
 
 
-def create_transform(size_in, context_channels=None, num_bits=8, preprocessing='glow'):
+def create_transform(size_in, context_channels=None, num_bits=8, preprocessing='glow', levels=3, hidden_channels=64):
     # if not isinstance(hidden_channels, list):
     #     hidden_channels = [hidden_channels] * levels
 
     c, h, w = size_in
 
-    # TODO: kwargs!!
-    levels = 3
-    hidden_channels = 64
     hc = [hidden_channels] * levels
     mct = transforms.CompositeTransform(add_glow(size_in, levels, hc, context_channels=context_channels))
 

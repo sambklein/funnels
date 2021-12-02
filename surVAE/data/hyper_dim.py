@@ -5,7 +5,7 @@ from itertools import combinations_with_replacement, permutations
 
 from torch.utils.data import Dataset
 
-# TODO: rename this, subclasses are not plane datasets in any sense of the word
+# TODO: rename this, subclasses are not plane datasets
 class HyperPlaneDataset(Dataset):
     def __init__(self, num_points, dim, flip_axes=False):
         self.num_points = num_points
