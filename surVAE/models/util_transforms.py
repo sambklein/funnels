@@ -189,3 +189,48 @@ class ResNet18Dec(nn.Module):
         # std = std.view(std.size(0), 3, 32, 32)
         std = self.log_var
         return mu, std
+
+
+class Reshape(nn.Module):
+    def __init__(self, shape):
+        super(Reshape, self).__init__()
+        self.shape = shape
+
+    def forward(self, x):
+        return x.view(x.shape[0], *self.shape)
+
+def get_model(image_dims, latent_size, direction=1):
+    c, h, w = image_dims
+    if direction == -1:
+        MLP_width = 512
+
+        class decoder(nn.Module):
+            def __init__(self):
+                super(decoder, self).__init__()
+                MLP_layers = [nn.Linear(latent_size, MLP_width),
+                              nn.ReLU(),
+                              nn.Linear(MLP_width, MLP_width),
+                              nn.ReLU(),
+                              nn.Linear(MLP_width, MLP_width),
+                              nn.ReLU(),
+                              nn.Linear(MLP_width, c * h * w),
+                              # nn.Sigmoid(),
+                              Reshape((c, h, w))]
+                self.dec = nn.Sequential(*MLP_layers)
+                self.log_scale = nn.Parameter(torch.Tensor([0.0]))
+
+            def forward(self, data):
+                return self.dec(data), self.log_scale
+
+        return decoder()
+    else:
+        MLP_width = 512
+        MLP = [Reshape([c * h * w]),
+               nn.Linear(c * h * w, MLP_width),
+               nn.ReLU(),
+               nn.Linear(MLP_width, MLP_width),
+               nn.ReLU(),
+               nn.Linear(MLP_width, MLP_width),
+               nn.ReLU(),
+               nn.Linear(MLP_width, latent_size * 2)]
+        return MLP

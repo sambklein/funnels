@@ -364,7 +364,6 @@ def create_transform(inp_dim, context_features=None, funnel=False, base_transfor
 # create model
 if args.vae:
     print('Training a VAE')
-    # TODO: kwargs!!
     depth = args.vae_depth
     width = args.vae_width
     # layers = [512, 512, 512]
@@ -378,7 +377,13 @@ elif args.mlp:
         activ = sur_flows.SPLEEN
         activ_kwargs = {'tail_bound': 4., 'tails': 'linear', 'num_bins': 10}
         transform_list = [
+            sur_flows.InferenceMLP(features, features),
+            activ(**activ_kwargs),
+            sur_flows.InferenceMLP(features, features),
+            activ(**activ_kwargs),
             sur_flows.InferenceMLP(features, ls),
+            activ(**activ_kwargs),
+            sur_flows.InferenceMLP(ls, ls),
             activ(**activ_kwargs),
             sur_flows.InferenceMLP(ls, ls),
             activ(**activ_kwargs),

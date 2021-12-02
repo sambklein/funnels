@@ -19,6 +19,7 @@ from surVAE.models import ReverseSqueezeTransform, util_transforms, sur_flows
 from surVAE.models.VAE import VAE
 from surVAE.models.sur_flows import NByOneConv, SurNSF, surRqNSF, NByOneSlice, NByOneStandardConv, TanhLayer, LeakyRelu, \
     NByOneInnConv, SurConv
+from surVAE.models.util_transforms import get_model
 from surVAE.utils.io import save_object
 from surVAE.utils import autils
 import time
@@ -45,8 +46,6 @@ def parse_args():
                         help='The dimension of the input data.')
     parser.add_argument('--latent_size', type=int, default=4,
                         help='The size of the VAE latent size.')
-    parser.add_argument('--slice', type=int, default=2,
-                        help='Use a funnel or slice the tensor?')
     parser.add_argument('--funnel_first', type=int, default=0,
                         help='The dimension of the input data.')
     parser.add_argument('--n_funnels', type=int, default=1,
@@ -91,7 +90,7 @@ def parse_args():
                         help='Spline tail bound.')
 
     # Dataset and training parameters
-    parser.add_argument('--dataset', type=str, default='cifar-10-fast',
+    parser.add_argument('--dataset', type=str, default='mnist',
                         help='The name of the plane dataset on which to train.')
     # parser.add_argument('--dataset', type=str, default='imagenet-64-fast',
     #                     help='The name of the plane dataset on which to train.')
@@ -145,7 +144,6 @@ conv_width = args.conv_width
 # steps_per_level = 10
 steps_per_level = args.steps_per_level
 levels = args.levels
-# TODO: this is set to True for imagenet experiments, but isn't implemented here
 multi_scale = args.multi_scale
 actnorm = args.actnorm
 
@@ -361,73 +359,21 @@ class RotateImageTransform(transforms.Transform):
 def funnel_conv(num_channels, hidden_channels, image_width):
     step_transforms = []
 
-    # TODO: the RQ-NSF rquires data to be in [-1, 1]
-    # if actnorm:
-    #     step_transforms.append(transforms.ActNorm(num_channels))
-
-    if args.slice == 1:
-        step_transforms.extend([
-            NByOneSlice(num_channels,
-                        hidden_features=hidden_channels,
-                        width=conv_width,
-                        num_blocks=num_res_blocks,
-                        nstack=steps_per_level,
-                        # tail_bound=spline_params['tail_bound'],
-                        tail_bound=4.,
-                        num_bins=spline_params['num_bins'],
-                        spline=1)
-        ])
-    elif args.slice == 2:
-        step_transforms.extend([
-            NByOneStandardConv(num_channels, image_width,
-                               hidden_features=hidden_channels,
-                               width=conv_width,
-                               num_blocks=num_res_blocks,
-                               nstack=steps_per_level,
-                               tail_bound=4.,
-                               num_bins=spline_params['num_bins'],
-                               spline=1,
-                               gauss=args.gauss_decoder
-                               )
-        ])
-    elif args.slice == 3:
-        step_transforms.extend([
-            NByOneInnConv(num_channels, image_width,
-                          hidden_features=hidden_channels,
-                          width=conv_width,
-                          num_blocks=num_res_blocks,
-                          nstack=steps_per_level,
-                          tail_bound=4.,
-                          num_bins=spline_params['num_bins'],
-                          spline=1,
-                          gauss=args.gauss_decoder
-                          )
-        ])
-    elif args.slice == 4:
-        step_transforms.extend([
-            SurConv(num_channels, image_width,
-                    hidden_features=hidden_channels,
-                    width=conv_width,
-                    num_blocks=num_res_blocks,
-                    nstack=steps_per_level,
-                    tail_bound=4.,
-                    num_bins=spline_params['num_bins'],
-                    spline=1,
-                    gauss=args.gauss_decoder
-                    )
-        ])
-    else:
-        step_transforms.extend([
-            NByOneConv(num_channels,
-                       hidden_features=hidden_channels,
-                       width=conv_width,
-                       num_blocks=num_res_blocks,
-                       nstack=steps_per_level,
-                       # tail_bound=spline_params['tail_bound'],
-                       tail_bound=4.,
-                       num_bins=spline_params['num_bins'],
-                       spline=1)
-        ])
+    # TODO: does including this make much of a difference?
+    if actnorm:
+        step_transforms.append(transforms.ActNorm(num_channels))
+    step_transforms.extend([
+        NByOneStandardConv(num_channels, image_width,
+                           hidden_features=hidden_channels,
+                           width=conv_width,
+                           num_blocks=num_res_blocks,
+                           nstack=steps_per_level,
+                           tail_bound=4.,
+                           num_bins=spline_params['num_bins'],
+                           spline=1,
+                           gauss=args.gauss_decoder
+                           )
+    ])
 
     if args.activation_funnel == 'tanh':
         step_transforms.extend([TanhLayer()])
@@ -466,12 +412,8 @@ def add_glow(size_in, context_channels=None):
     return all_transforms
 
 
-def create_transform(flow_type, size_in, size_out):
-    # if not isinstance(hidden_channels, list):
-    #     hidden_channels = [hidden_channels] * levels
-
+def create_transform(flow_type, size_in):
     c, h, w = size_in
-    c_out, h_out, w_out = size_out
 
     all_transforms = []
 
@@ -583,14 +525,8 @@ def create_transform(flow_type, size_in, size_out):
 
                 if args.funnel_first == 0:
                     if level < 2:
-                        # TODO: the results you have in the abstract are with this compression!!
-                        # if level < 1:
-                        if level == 1:
-                            args.slice = 2
-                        # if level == 0:
                         funnel_model, width = funnel_conv(c, level_hidden_channels, w)
                         all_transforms += [funnel_model]
-                        # w = int((w - w % conv_width) * (conv_width - 1) / conv_width)
                         w = width
                         h = w
 
@@ -660,6 +596,7 @@ def create_transform(flow_type, size_in, size_out):
 
     elif flow_type == 'funnelMLP':
         out_dim = args.latent_size
+
         # out_dim = 192
 
         def createMLP(features):
@@ -698,79 +635,18 @@ def create_transform(flow_type, size_in, size_out):
         h = w = 1
 
     elif flow_type == 'VAE':
-        width = 2
-        stride = 1
-        n_chan = c
-        padding = 0
-        MLP_width = 512
         latent_size = args.latent_size
-        conv_params = {'in_channels': n_chan, 'out_channels': n_chan, 'kernel_size': width, 'stride': stride,
-                       'padding': padding}
-        # post_conv_width = w / (width ** 2)
-        post_conv_width = w
-        post_conv_size = int(np.floor(n_chan * post_conv_width ** 2))
-
-        # TODO: Need to match the number of parameters
-        class Reshape(nn.Module):
-            def __init__(self, shape):
-                super(Reshape, self).__init__()
-                self.shape = shape
-
-            def forward(self, x):
-                return x.view(x.shape[0], *self.shape)
-
-        def get_model(direction=1):
-            if direction == -1:
-                MLP_width = 512
-
-                class decoder(nn.Module):
-                    def __init__(self):
-                        super(decoder, self).__init__()
-                        MLP_layers = [nn.Linear(latent_size, MLP_width),
-                                      nn.ReLU(),
-                                      nn.Linear(MLP_width, MLP_width),
-                                      nn.ReLU(),
-                                      nn.Linear(MLP_width, MLP_width),
-                                      nn.ReLU(),
-                                      nn.Linear(MLP_width, c * h * w),
-                                      # nn.Sigmoid(),
-                                      Reshape((c, h, w))]
-                        self.dec = nn.Sequential(*MLP_layers)
-                        self.log_scale = nn.Parameter(torch.Tensor([0.0]))
-
-                    def forward(self, data):
-                        return self.dec(data), self.log_scale
-
-                return decoder()
-            else:
-                MLP_width = 512
-                MLP = [Reshape([c * h * w]),
-                       nn.Linear(c * h * w, MLP_width),
-                       nn.ReLU(),
-                       nn.Linear(MLP_width, MLP_width),
-                       nn.ReLU(),
-                       nn.Linear(MLP_width, MLP_width),
-                       nn.ReLU(),
-                       nn.Linear(MLP_width, latent_size * 2)]
-                return MLP
 
         if args.dataset == 'mnist':
             encoder = nn.Sequential(
-                *get_model()
+                *get_model((c, h, w), latent_size)
             )
-            # decoder = nn.Sequential(
-            #     *get_model(direction=-1)
-            # )
-            decoder = get_model(direction=-1)
+            decoder = get_model((c, h, w), latent_size, direction=-1)
         else:
             encoder = util_transforms.ResNet18Enc(z_dim=latent_size)
             decoder = util_transforms.ResNet18Dec(z_dim=latent_size, w=w)
 
         vae = VAE(0, latent_size, 0, encoder=encoder, decoder=decoder)
-
-        # autoencoder = nn.Sequential(encoder, decoder)
-        # print(f'{get_num_parameters(encoder):,}')
-        # print(f'{get_num_parameters(autoencoder):,}')
 
     elif 'funnel_conv_deeper':
         squeeze_factor = 2
@@ -796,8 +672,6 @@ def create_transform(flow_type, size_in, size_out):
             else:
                 all_transforms += [create_transform_step(c, level_hidden_channels),
                                    transforms.OneByOneConvolution(c)]
-            # TODO: here you could try an augment layer to increase the channel dimensions to make it more similar to
-            # TODO: a standard CNN with additional channels in the output of the convolution
             funnel_model, width = funnel_conv(c, level_hidden_channels, w)
             w = width
             all_transforms += [funnel_model]
@@ -844,9 +718,8 @@ def create_transform(flow_type, size_in, size_out):
         return transforms.CompositeTransform([preprocess_transform, mct]), (c, h, w)
 
 
-def create_flow(size_in, size_out, flow_checkpoint=None, flow_type=flow_type):
-    c_out, h_out, w_out = size_out
-    transform, (c_out, h_out, w_out) = create_transform(flow_type, size_in, size_out)
+def create_flow(size_in, flow_checkpoint=None, flow_type=flow_type):
+    transform, (c_out, h_out, w_out) = create_transform(flow_type, size_in)
     if flow_type.casefold() == 'vae':
         flow = transform
     else:
@@ -988,14 +861,6 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device):
             fig.savefig(svo.save_name(f'reconstructions_{step}.png'))
             plt.close(fig)
 
-            # fig, axs = plt.subplots(1, 2, figsize=(4, 4))
-            # autils.imshow(make_grid((batch[:64] / 2 ** num_bits - 0.5) * 2, nrow=8), axs[0])
-            # n_conv = NByOneStandardConv(3)
-            # autils.imshow(make_grid((n_conv.test_inverse(batch[:64])[0] / 2 ** num_bits - 0.5) * 2, nrow=8), axs[1])
-            # fig.savefig(svo.save_name(f'training_data{step}.png'))
-            # fig.tight_layout()
-            # plt.close(fig)
-
         if step > 0 and step % intervals['eval'] == 0 and (val_loader is not None):
             def log_prob_fn(batch):
                 return flow.log_prob(batch.to(device))
@@ -1019,22 +884,6 @@ def train_flow(flow, train_dataset, val_dataset, dataset_dims, device):
             torch.save(flow.state_dict(), os.path.join(run_dir, f'{args.outputname}_flow_last.pt'))
             print('It: {}/{} saved optimizer_last.pt and flow_last.pt'.format(step, num_steps))
 
-        # TODO: this is actually a useful measure, but breaks everything in it's current formulation
-        # if step > 0 and step % intervals['reconstruct'] == 0:
-        #     with torch.no_grad():
-        #         random_batch_ = random_batch.to(device)
-        #         random_batch_rec, logabsdet = identity_transform(random_batch_)
-        #
-        #         max_abs_diff = torch.max(torch.abs(random_batch_rec - random_batch_))
-        #         max_logabsdet = torch.max(logabsdet)
-        #
-        #     summary_writer.add_scalar(tag='max_reconstr_abs_diff',
-        #                               scalar_value=max_abs_diff.item(),
-        #                               global_step=step)
-        #     summary_writer.add_scalar(tag='max_reconstr_logabsdet',
-        #                               scalar_value=max_logabsdet.item(),
-        #                               global_step=step)
-
 
 def evaluate_flow(flow, val_dataset, dataset_dims, device, anomaly_dataset=None):
     flow = flow.to(device)
@@ -1057,7 +906,6 @@ def evaluate_flow(flow, val_dataset, dataset_dims, device, anomaly_dataset=None)
     def log_prob_fn(batch):
         return flow.log_prob(batch.to(device))
 
-    # TODO: for VAE you need to get a les biased estimate for this
     val_log_prob = autils.eval_log_density(log_prob_fn=log_prob_fn,
                                            data_loader=val_loader)
     val_log_prob = nats_to_bits_per_dim(val_log_prob)
@@ -1083,27 +931,12 @@ def evaluate_flow(flow, val_dataset, dataset_dims, device, anomaly_dataset=None)
 def train_and_generate_images():
     train_dataset, val_dataset, (c, h, w) = get_image_data(dataset, num_bits, valid_frac=args.valid_frac)
 
-    if flow_type == 'funnel_conv':
-        # c_out, h_out, w_out = c, int(h / conv_width ** n_funnels), int(w / conv_width ** n_funnels)
-        # TODO: when you fix this it should be ceil not floor, for now you are dropping a row of pixels to make it even
-        # for the squeezing operation to work how it should
-        c_out, h_out, w_out = c, \
-                              h, \
-                              int((w - w % conv_width) * ((conv_width - 1) / conv_width) ** n_funnels)
-        # int(np.floor(w * ((conv_width - 1) / conv_width) ** n_funnels))
-    elif flow_type == 'funnel_non_conv':
-        c_out, h_out, w_out = 256, 1, 1
-    elif flow_type == 'funnel':
-        c_out, h_out, w_out = c - n_funnels, h, w
-    else:
-        c_out, h_out, w_out = c, h, w
-
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     if torch.cuda.is_available():
         torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
-    flow = create_flow((c, h, w), (c_out, h_out, w_out))
+    flow = create_flow((c, h, w))
     print(f'There are {get_num_parameters(flow)} params')
     # Can't set default back without messing with the nflows package directly, the problem is the zeros likelihoods
     # torch.set_default_tensor_type('torch.FloatTensor')
@@ -1116,18 +949,6 @@ def train_and_generate_images():
     else:
         anomaly_dataset = None
     evaluate_flow(flow, val_dataset, (c, h, w), device, anomaly_dataset=anomaly_dataset)
-
-    # fig, axs = plt.subplots(1, 2, figsize=(4 * len(temperatures), 4))
-    # preprocess_transform = transforms.AffineScalarTransform(scale=1. / 2 ** num_bits,
-    #                                                         shift=-0.5)
-    # ta, _ = preprocess_transform(anomaly_dataset.data[:64].unsqueeze(1))
-    # ta += 0.5
-    # tap, _ = preprocess_transform(val_dataset.data[:64].unsqueeze(1))
-    # tap += 0.5
-    # autils.imshow(make_grid(tap, nrow=8), axs[0])
-    # autils.imshow(make_grid(ta, nrow=8), axs[1])
-    # fig.savefig(svo.save_name(f'fMNIST.png'))
-    # plt.close(fig)
 
 
 if __name__ == '__main__':
