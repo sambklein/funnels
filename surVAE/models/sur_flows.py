@@ -200,14 +200,14 @@ class fMLP(nflows.transforms.Transform):
     def __init__(self, in_nodes, out_nodes, direct_inference=True, decoder=None):
         super(fMLP, self).__init__()
         self.F = nn.Linear(in_nodes, out_nodes)
-        # torch.nn.init.ones_(self.F.weight)
-        # self.F.bias.data.fill_(0.0)
         self.direct_inference = direct_inference
         if not direct_inference:
             if decoder is not None:
-                self.decoder = decoder(in_nodes, out_nodes)
+                # self.decoder = decoder(in_nodes, out_nodes)
+                self.decoder = decoder(in_nodes, 1)
             else:
-                self.decoder = ConditionalGaussianDecoder(in_nodes, out_nodes)
+                # self.decoder = ConditionalGaussianDecoder(in_nodes, out_nodes)
+                self.decoder = ConditionalGaussianDecoder(in_nodes, 1)
 
     def get_likelihood_contr(self):
         return self.F.weight.abs().log().sum(0).mean()
@@ -219,9 +219,11 @@ class fMLP(nflows.transforms.Transform):
         if self.direct_inference:
             likelihood_cond = torch.zeros(x.shape[0]).to(x.device)
         else:
-            likelihood_cond = self.decoder.log_prob(x, context=output)
+            # likelihood_cond = self.decoder.log_prob(x, context=output)
+            likelihood_cond = self.decoder.log_prob(x.repeat_interleave(output.shape[1], 0), context=output.view(-1, 1))
+            likelihood_cond = likelihood_cond.view(x.shape[0], -1).sum(-1)
         m = self.F.weight.shape[1]
-        total_likelihood_contr = likelihood_contr + likelihood_cond / m
+        total_likelihood_contr = likelihood_contr + likelihood_cond # / m
         # total_likelihood_contr = likelihood_contr + likelihood_cond / m + np.log(m) / m
         return output, total_likelihood_contr
 
@@ -461,8 +463,8 @@ class NByOneStandardConv(nflows.transforms.Transform):
         x = self.make_an_image(batch_size, samples,
                                transformed_sections.view(batch_size, self.num_channels,
                                                          int(self.output_image_size ** 2)).transpose(1, 2))
-        log_detJ = self.get_J().det().abs().log() * np.prod(z.shape[-2:])
-        return x, log_prob
+        log_detJ = inv_J.det().abs().log() * np.prod(z.shape[-2:])
+        return x, log_prob.view(batch_size, -1).sum(-1) + log_detJ
 
     def test_inverse(self, inputs):
         batch_size, c, h, w = inputs.shape

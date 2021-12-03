@@ -67,7 +67,7 @@ parser.add_argument('--vae_layer_norm', type=int, default=0, help='Use layer nor
 parser.add_argument('--mlp', type=int, default=2, help='Train a vae?')
 
 # flow details
-parser.add_argument('--base_transform_type', type=str, default='vae',
+parser.add_argument('--base_transform_type', type=str, default='gas',
                     choices=['affine-coupling', 'quadratic-coupling', 'rq-coupling',
                              'affine-autoregressive', 'quadratic-autoregressive',
                              'rq-autoregressive'],

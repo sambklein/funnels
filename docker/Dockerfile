@@ -1,4 +1,4 @@
-ARG TORCH_VERSION=latest
+ARG TORCH_VERSION=1.8.1-cuda11.1-cudnn8-runtime
 
 FROM pytorch/pytorch:${TORCH_VERSION}#this will get replaced in the ci though
 

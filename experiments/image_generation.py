@@ -42,7 +42,7 @@ def parse_args():
     parser.add_argument('--n_gen', type=int, default=10000, help='Number of samples to generate for evaluation.')
 
     # Model set up
-    parser.add_argument('--model', type=str, default='funnel_conv',
+    parser.add_argument('--model', type=str, default='funnelMLP',
                         help='The dimension of the input data.')
     parser.add_argument('--latent_size', type=int, default=4,
                         help='The size of the VAE latent size.')
@@ -362,6 +362,7 @@ def funnel_conv(num_channels, hidden_channels, image_width):
     # TODO: does including this make much of a difference?
     if actnorm:
         step_transforms.append(transforms.ActNorm(num_channels))
+
     step_transforms.extend([
         NByOneStandardConv(num_channels, image_width,
                            hidden_features=hidden_channels,
@@ -375,12 +376,15 @@ def funnel_conv(num_channels, hidden_channels, image_width):
                            )
     ])
 
+    ind=-2
     if args.activation_funnel == 'tanh':
         step_transforms.extend([TanhLayer()])
     elif args.activation_funnel == 'leaky_relu':
         step_transforms.extend([LeakyRelu()])
+    else:
+        ind=-1
 
-    return transforms.CompositeTransform(step_transforms), step_transforms[0].output_image_size
+    return transforms.CompositeTransform(step_transforms), step_transforms[ind].output_image_size
 
 
 def add_glow(size_in, context_channels=None):
@@ -597,8 +601,6 @@ def create_transform(flow_type, size_in):
     elif flow_type == 'funnelMLP':
         out_dim = args.latent_size
 
-        # out_dim = 192
-
         def createMLP(features):
             activ = sur_flows.SPLEEN
             activ_kwargs = {'tail_bound': 2., 'tails': 'linear', 'num_bins': 10}
@@ -616,18 +618,6 @@ def create_transform(flow_type, size_in):
                 activ(**activ_kwargs),
                 sur_flows.InferenceMLP(64, out_dim, width=width, depth=depth),
             ]
-            # transform_list = [
-            #     sur_flows.FlattenTransform(c, h, w),
-            #     sur_flows.InferenceMLP(features, 512, width=width, depth=depth),
-            #     activ(**activ_kwargs),
-            #     sur_flows.InferenceMLP(512, 256, width=width, depth=depth),
-            #     activ(**activ_kwargs),
-            #     sur_flows.InferenceMLP(256, 200, width=width, depth=depth),
-            #     activ(**activ_kwargs),
-            #     sur_flows.InferenceMLP(200, 195, width=width, depth=depth),
-            #     activ(**activ_kwargs),
-            #     sur_flows.InferenceMLP(195, out_dim, width=width, depth=depth),
-            # ]
             return transform_list
 
         all_transforms = createMLP(c * h * w)
