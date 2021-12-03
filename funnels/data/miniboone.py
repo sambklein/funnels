@@ -1,6 +1,6 @@
 import numpy as np
 import os
-import surVAE.utils as utils
+import funnels.utils as utils
 
 from matplotlib import pyplot as plt
 from torch.utils.data import Dataset

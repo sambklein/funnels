@@ -4,7 +4,7 @@ from setuptools import find_packages, setup
 #     long_description = fh.read()
 
 setup(
-    name="surVAE",
+    name="funnels",
     version='0.1',
     description="Experiments for studying distribution matching.",
     # long_description=long_description,

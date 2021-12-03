@@ -33,7 +33,7 @@ def get_checkpoint_root(directory=None):
     return directory
 
 def get_data_root():
-    return f'{get_top_dir()}/surVAE/data/downloads'
+    return f'{get_top_dir()}/funnels/data/downloads'
 
 
 class NoDataRootError(Exception):
@@ -46,7 +46,7 @@ def get_top_dir():
     if id == 'samklein':
         sv_ims = '/Users/samklein/PycharmProjects/surVAEsearcher'
     elif id == 'users':
-        sv_ims = '/home/users/k/kleins/MLproject/surVAE'
+        sv_ims = '/home/users/k/kleins/MLproject/funnels'
     else:
         # raise ValueError('Unknown path for saving images {}'.format(p))
         data_root_var = 'REPOROOT'
@@ -61,7 +61,7 @@ def get_data_root():
     # if on_cluster():
     #     return '/scratch'
     # else:
-    return f'{get_top_dir()}/surVAE/data/downloads'
+    return f'{get_top_dir()}/funnels/data/downloads'
 
 def get_image_data_root(name):
     return f'{get_data_root()}/images/{name}'

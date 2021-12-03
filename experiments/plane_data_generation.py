@@ -9,16 +9,16 @@ import matplotlib.pyplot as plt
 
 import time
 
-from surVAE.data.plane import load_plane_dataset
-from surVAE.models.flows import get_transform
-from surVAE.models.sur_flows import SurNSF
-from surVAE.data.hyper_dim import HyperCheckerboardDataset
+from funnels.data.plane import load_plane_dataset
+from funnels.models.flows import get_transform
+from funnels.models.sur_flows import SurNSF
+from funnels.data.hyper_dim import HyperCheckerboardDataset
 
 import argparse
 
-from surVAE.utils.io import save_object
-from surVAE.utils.plotting import getCrossFeaturePlot, plot2Dhist, plot_likelihood
-from surVAE.utils.torch_utils import tensor2numpy
+from funnels.utils.io import save_object
+from funnels.utils.plotting import getCrossFeaturePlot, plot2Dhist, plot_likelihood
+from funnels.utils.torch_utils import tensor2numpy
 
 
 def parse_args():
@@ -50,7 +50,7 @@ def parse_args():
     parser.add_argument('--num_add', type=int, default=1,
                         help='The number of additional layers to add.')
     parser.add_argument('--add_sur', type=int, default=0,
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--splines', type=int, default=1,
                         help='Use RQ-NSF if true, else Real NVP.')
 
@@ -58,21 +58,21 @@ def parse_args():
     parser.add_argument('--dataset', type=str, default='checkerboard',
                         help='The name of the plane dataset on which to train.')
     parser.add_argument('--batch_size', type=int, default=100,
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--n_epochs', type=int, default=10,
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--lr', type=float, default=0.001,
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--ndata', type=int, default=int(1e5),
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--n_val', type=int, default=int(1e3),
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--n_test', type=int, default=int(1e4),
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--gclip', type=float, default=5.,
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--monitor_interval', type=int, default=100,
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--bnorm', type=int, default=0,
                         help='Apply batch normalisation?')
 
@@ -100,7 +100,7 @@ def checkerboard_test():
                                     tails=args.tails,
                                     spline=spline)]
 
-    # Add the surVAE layers
+    # Add the funnels layers
     dim = inp_dim
     sur_layers = []
     for _ in range(args.num_add * args.add_sur):

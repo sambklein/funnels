@@ -3,7 +3,7 @@ import os
 
 from torch.utils.data import DataLoader
 
-from surVAE.data.image_data import get_image_data, Preprocess
+from funnels.data.image_data import get_image_data, Preprocess
 from torchvision.utils import save_image
 
 

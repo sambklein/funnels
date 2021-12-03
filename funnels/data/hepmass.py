@@ -1,7 +1,7 @@
 import numpy as np
 import os
 import pandas as pd
-import surVAE.utils as utils
+import funnels.utils as utils
 
 from collections import Counter
 from matplotlib import pyplot as plt

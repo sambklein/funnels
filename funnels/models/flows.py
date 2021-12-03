@@ -1,7 +1,7 @@
 from nflows import transforms
 from torch.nn import functional as F
 
-from surVAE.models.nn.MLPs import dense_net
+from funnels.models.nn.MLPs import dense_net
 
 
 def get_transform(inp_dim=1, nodes=64, num_blocks=2, nstack=2, tails='linear', tail_bound=1., num_bins=10,

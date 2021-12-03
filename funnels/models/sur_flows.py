@@ -7,9 +7,9 @@ from nflows.transforms import splines, PiecewiseRationalQuadraticCDF
 from nflows.transforms.coupling import CouplingTransform
 from nflows.utils import sum_except_batch
 
-from surVAE.models.GLOW import create_flow
-from surVAE.models.flows import get_transform, coupling_spline
-from surVAE.models.nn.MLPs import dense_net
+from funnels.models.GLOW import create_flow
+from funnels.models.flows import get_transform, coupling_spline
+from funnels.models.nn.MLPs import dense_net
 import numpy as np
 
 import torch

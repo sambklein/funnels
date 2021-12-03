@@ -1,6 +1,6 @@
 import math
 import torch
-from surVAE.utils.torch_utils import tensor2numpy
+from funnels.utils.torch_utils import tensor2numpy
 
 
 def nats_to_bits_per_dim(nats, c, h, w):

@@ -6,8 +6,8 @@ import zipfile
 import torch
 from torch.utils.data import Dataset
 
-from surVAE.data.base import UnlabelledImageFolder
-from surVAE.data.download import download_file_from_google_drive
+from funnels.data.base import UnlabelledImageFolder
+from funnels.data.download import download_file_from_google_drive
 
 
 class CelebA(UnlabelledImageFolder):

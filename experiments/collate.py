@@ -4,7 +4,7 @@ from matplotlib.lines import Line2D
 import pickle
 import glob
 
-from surVAE.utils.io import get_top_dir, save_object
+from funnels.utils.io import get_top_dir, save_object
 
 
 class collater():

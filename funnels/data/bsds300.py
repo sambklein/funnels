@@ -5,7 +5,7 @@ import os
 from matplotlib import pyplot as plt
 from torch.utils import data
 
-from surVAE.utils import get_data_root
+from funnels.utils import get_data_root
 
 
 def load_bsds300():

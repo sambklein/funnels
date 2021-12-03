@@ -8,7 +8,7 @@
 /jobs
 /experiments/data
 /experiments/logs
-surVAE/data/downloads
+funnels/data/downloads
 collate/data
 /data/saved_models
 /data/slims

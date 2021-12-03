@@ -1,8 +1,8 @@
 # THis is a script for training flows on image data, borrowed from https://github.com/bayesiains/nsf/blob/eaa9377f75df1193025f6b2487524cf266874472/experiments/images_data.py#L56
-import surVAE.data as data
-from surVAE.data.celeba import CelebAHQ64Fast
+import funnels.data as data
+from funnels.data.celeba import CelebAHQ64Fast
 
-from surVAE.utils.io import get_image_data_root
+from funnels.utils.io import get_image_data_root
 
 import torch
 import numpy as np

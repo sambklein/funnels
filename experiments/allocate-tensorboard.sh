@@ -2,7 +2,7 @@
 #SBATCH --partition=public-cpu,shared-cpu
 #SBATCH --time=4:00:00
 #SBATCH --mem=2GB
-#SBATCH --output=/home/users/k/kleins/MLproject/surVAE/jobs/slurm-%A-%x_%a.out
+#SBATCH --output=/home/users/k/kleins/MLproject/funnels/jobs/slurm-%A-%x_%a.out
 
 _image_location=/home/users/k/kleins/MLproject/surVAE/container/tensorflow_latest.sif
 

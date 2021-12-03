@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import norm
 
-from surVAE.utils.plotting import plot2Dhist, plot_likelihood
+from funnels.utils.plotting import plot2Dhist, plot_likelihood
 
 
 def plot_data(data_names, save_name, bound=1., bins=50):

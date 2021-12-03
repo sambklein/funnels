@@ -13,18 +13,18 @@ import matplotlib.pyplot as plt
 
 import time
 
-from surVAE.data.base import BasicData
-from surVAE.data.plane import load_plane_dataset
-from surVAE.models.flows import get_transform
-from surVAE.models.sur_flows import SurNSF
-from surVAE.data.hyper_dim import HyperCheckerboardDataset
+from funnels.data.base import BasicData
+from funnels.data.plane import load_plane_dataset
+from funnels.models.flows import get_transform
+from funnels.models.sur_flows import SurNSF
+from funnels.data.hyper_dim import HyperCheckerboardDataset
 
 import argparse
 
-from surVAE.utils.io import save_object, get_top_dir, on_cluster
-from surVAE.utils.physics_utils import calculate_bmjj
-from surVAE.utils.plotting import getCrossFeaturePlot, plot2Dhist, plot_likelihood, get_bins, get_weights
-from surVAE.utils.torch_utils import tensor2numpy
+from funnels.utils.io import save_object, get_top_dir, on_cluster
+from funnels.utils.physics_utils import calculate_bmjj
+from funnels.utils.plotting import getCrossFeaturePlot, plot2Dhist, plot_likelihood, get_bins, get_weights
+from funnels.utils.torch_utils import tensor2numpy
 
 
 def parse_args():
@@ -54,23 +54,23 @@ def parse_args():
     parser.add_argument('--num_add', type=int, default=1,
                         help='The number of additional layers to add.')
     parser.add_argument('--add_sur', type=int, default=1,
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--splines', type=int, default=1,
                         help='Use RQ-NSF if true, else Real NVP.')
 
     # Dataset and training parameters
     parser.add_argument('--batch_size', type=int, default=1000,
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--n_epochs', type=int, default=100,
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--lr', type=float, default=0.001,
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--n_test', type=int, default=int(1e4),
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--gclip', type=float, default=5.,
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--monitor_interval', type=int, default=100,
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--bnorm', type=int, default=1,
                         help='Apply batch normalisation?')
 
@@ -93,9 +93,9 @@ def read_ttbar_file(file):
 
 def read_ttbar():
     if on_cluster():
-        files = glob.glob(f'{get_top_dir()}/surVAE/data/downloads/ttbar/*.npy')
+        files = glob.glob(f'{get_top_dir()}/funnels/data/downloads/ttbar/*.npy')
     else:
-        files = [f'{get_top_dir()}/surVAE/data/downloads/ttbar/events_merged.npy']
+        files = [f'{get_top_dir()}/funnels/data/downloads/ttbar/events_merged.npy']
     four_vectors = []
     tags = []
     et_info = []
@@ -148,7 +148,7 @@ def ttbar_experiment():
                                     tails=args.tails,
                                     spline=spline)]
 
-    # Add the surVAE layers
+    # Add the funnels layers
     dim = inp_dim
     sur_layers = []
     for _ in range(args.num_add * args.add_sur):

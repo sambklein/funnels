@@ -440,7 +440,7 @@ def plot_projection(dataset, name, shft=0):
 def threeDscatter(dataset, nsample, name, flip=False):
     from mpl_toolkits import mplot3d
     from matplotlib import pyplot as plt
-    from surVAE.utils.io import get_top_dir
+    from funnels.utils.io import get_top_dir
     dim = 3
     data = dataset(nsample, dim, flip_axes=flip).data
     fig = plt.figure()

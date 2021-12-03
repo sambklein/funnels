@@ -16,15 +16,15 @@ from torch.nn.utils import clip_grad_norm_
 from torch.utils import data
 from tqdm import tqdm
 
-import surVAE.data as data_
+import funnels.data as data_
 import nflows.nn as nn_
-import surVAE.utils as utils
+import funnels.utils as utils
 
 from nflows import distributions, flows, transforms
 
-from surVAE.models import sur_flows
-from surVAE.models.VAE import VAE
-from surVAE.utils.io import get_timestamp, on_cluster, get_log_root, get_checkpoint_root, save_object
+from funnels.models import sur_flows
+from funnels.models.VAE import VAE
+from funnels.utils.io import get_timestamp, on_cluster, get_log_root, get_checkpoint_root, save_object
 
 parser = argparse.ArgumentParser()
 

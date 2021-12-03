@@ -3,7 +3,7 @@ from nflows.distributions import StandardNormal
 from torch import nn
 import numpy as np
 
-from surVAE.models.nn.MLPs import dense_net
+from funnels.models.nn.MLPs import dense_net
 
 
 class transform(nn.Module):

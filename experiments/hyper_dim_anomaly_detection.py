@@ -8,14 +8,14 @@ import matplotlib.pyplot as plt
 
 import time
 
-from surVAE.models.sur_flows import SurNSF
-from surVAE.data.hyper_dim import HyperCheckerboardDataset
+from funnels.models.sur_flows import SurNSF
+from funnels.data.hyper_dim import HyperCheckerboardDataset
 
 import argparse
 
-from surVAE.utils.io import save_object
-from surVAE.utils.plotting import getCrossFeaturePlot
-from surVAE.utils.torch_utils import tensor2numpy
+from funnels.utils.io import save_object
+from funnels.utils.plotting import getCrossFeaturePlot
+from funnels.utils.torch_utils import tensor2numpy
 
 
 def parse_args():
@@ -47,25 +47,25 @@ def parse_args():
     parser.add_argument('--num_add', type=int, default=3,
                         help='The number of additional layers to add.')
     parser.add_argument('--add_sur', type=int, default=1,
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
 
     # Dataset and training parameters
     parser.add_argument('--batch_size', type=int, default=100,
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--n_epochs', type=int, default=5,
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--lr', type=float, default=0.001,
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--ndata', type=int, default=int(1e5),
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--n_val', type=int, default=int(1e3),
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--n_test', type=int, default=int(1e4),
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--gclip', type=float, default=5.,
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--monitor_interval', type=int, default=100,
-                        help='Whether to make the additional layers surVAE layers.')
+                        help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--bnorm', type=int, default=1,
                         help='Apply batch normalisation?')
 
@@ -99,7 +99,7 @@ def checkerboard_test():
         # transform_list += [transforms.ReversePermutation(inp_dim)]
         transform_list += [transforms.LULinear(inp_dim)]
 
-    # Add the surVAE layers
+    # Add the funnels layers
     dim = inp_dim
     for _ in range(args.num_add * args.add_sur):
         transform_list += [SurNSF(dim, args.nodes,

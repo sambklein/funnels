@@ -1,7 +1,7 @@
 import json
 
-from surVAE.data.base import load_num_batches
-from surVAE.data.image_data import get_image_data, Preprocess
+from funnels.data.base import load_num_batches
+from funnels.data.image_data import get_image_data, Preprocess
 import torch
 from nflows import distributions, flows, transforms
 from nflows.utils import create_mid_split_binary_mask
@@ -15,13 +15,13 @@ from torchvision.utils import make_grid, save_image
 
 # def config():
 # Saving
-from surVAE.models import ReverseSqueezeTransform, util_transforms, sur_flows
-from surVAE.models.VAE import VAE
-from surVAE.models.sur_flows import NByOneConv, SurNSF, surRqNSF, NByOneSlice, NByOneStandardConv, TanhLayer, LeakyRelu, \
+from funnels.models import ReverseSqueezeTransform, util_transforms, sur_flows
+from funnels.models.VAE import VAE
+from funnels.models.sur_flows import NByOneConv, SurNSF, surRqNSF, NByOneSlice, NByOneStandardConv, TanhLayer, LeakyRelu, \
     NByOneInnConv, SurConv
-from surVAE.models.util_transforms import get_model
-from surVAE.utils.io import save_object
-from surVAE.utils import autils
+from funnels.models.util_transforms import get_model
+from funnels.utils.io import save_object
+from funnels.utils import autils
 import time
 import matplotlib.pyplot as plt
 import os
