@@ -34,7 +34,7 @@ parser.add_argument('-n', '--outputname', type=str, default='local',
                     help='Set the output name directory')
 
 # data
-parser.add_argument('--dataset_name', type=str, default='gas',
+parser.add_argument('--dataset_name', type=str, default='power',
                     choices=['power', 'gas', 'hepmass', 'miniboone', 'bsds300'],
                     help='Name of dataset to use.')
 parser.add_argument('--train_batch_size', type=int, default=512,
@@ -49,7 +49,7 @@ parser.add_argument('--learning_rate', type=float, default=0.0005,
                     help='Learning rate for optimizer.')
 # parser.add_argument('--num_training_steps', type=int, default=200000,
 #                     help='Number of total training steps.')
-parser.add_argument('--num_training_steps', type=int, default=40000,
+parser.add_argument('--num_training_steps', type=int, default=1000,
                     help='Number of total training steps.')
 parser.add_argument('--anneal_learning_rate', type=int, default=1,
                     choices=[0, 1],
@@ -58,7 +58,7 @@ parser.add_argument('--grad_norm_clip_value', type=float, default=5.,
                     help='Value by which to clip norm of gradients.')
 
 # VAE details
-parser.add_argument('--vae', type=int, default=0, help='Train a vae?')
+parser.add_argument('--vae', type=int, default=2, help='Train a vae?')
 parser.add_argument('--vae_width', type=int, default=512, help='VAE encoder/decoder width')
 parser.add_argument('--vae_depth', type=int, default=2, help='VAE encoder/decoder depth')
 parser.add_argument('--vae_drp', type=float, default=0.0, help='Dropout in VAE')
@@ -369,7 +369,7 @@ if args.vae:
     # layers = [512, 512, 512]
     layers = [width] * depth
     flow = VAE(features, features - args.vae, layers, dropout=args.vae_drp, batch_norm=args.vae_batch_norm,
-               layer_norm=args.vae_layer_norm)
+               layer_norm=args.vae_layer_norm).to(device)
 elif args.mlp:
     print('Training a F-MLP')
     ls = features - args.mlp
@@ -524,12 +524,11 @@ flow.eval()
 with torch.no_grad():
     log_likelihood = torch.Tensor([])
     for batch in tqdm(test_loader):
-        with set_default_tensor_type():
-            log_density = flow.log_prob(batch.to(device)) 
-            log_likelihood = torch.cat([
-                log_likelihood,
-                log_density
-            ])
+        log_density = flow.log_prob(batch.to(device)).to(torch.device('cpu'))
+        log_likelihood = torch.cat([
+            log_likelihood,
+            log_density
+        ])
 path = os.path.join(log_dir, '{}-{}-log-likelihood.npy'.format(
     args.dataset_name,
     args.base_transform_type
