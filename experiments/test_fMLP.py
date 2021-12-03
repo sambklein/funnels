@@ -152,7 +152,7 @@ def checkerboard_test():
     # decoder = sur_flows.ConditionalFixedDecoder(inp_dim, out_dim, width=256, depth=3,
     #                                             sigma=0.1) if direct_inference else None
 
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f'Running on {device}')
     transform = transforms.CompositeTransform(transform_list)
     base_dist = nflows.distributions.StandardNormal([out_dim])
