@@ -1,5 +1,5 @@
 variables:
-  TORCH_VERSION: 1.8.0
+  TORCH_VERSION: 1.8.1-cuda11.1-cudnn8-runtime 
   CUDA: cuda11.1-cudnn8-runtime
 
 stages:

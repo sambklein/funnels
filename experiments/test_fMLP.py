@@ -60,7 +60,7 @@ def parse_args():
                         help='The name of the plane dataset on which to train.')
     parser.add_argument('--batch_size', type=int, default=1000,
                         help='Whether to make the additional layers surVAE layers.')
-    parser.add_argument('--n_epochs', type=int, default=100,
+    parser.add_argument('--n_epochs', type=int, default=10,
                         help='Whether to make the additional layers surVAE layers.')
     parser.add_argument('--lr', type=float, default=0.001,
                         help='Whether to make the additional layers surVAE layers.')
