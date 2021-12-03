@@ -117,10 +117,10 @@ class IdentityTransform(nflows.transforms.Transform):
     """
 
     def forward(self, inputs, context=None):
-        return inputs, torch.zeros(inputs.shape[0]).to(inputs.device)
+        return inputs, inputs.new_zeros(inputs.shape[0]).to(inputs.device)
 
     def inverse(self, inputs, context=None):
-        return inputs, torch.zeros(inputs.shape[0]).to(inputs.device)
+        return inputs, inputs.new_zeros(inputs.shape[0]).to(inputs.device)
 
 
 class FlattenTransform(nflows.transforms.Transform):
@@ -133,11 +133,11 @@ class FlattenTransform(nflows.transforms.Transform):
 
     def forward(self, inputs, context=None):
         batch_size = inputs.shape[0]
-        return inputs.view(batch_size, -1), torch.zeros(batch_size).to(inputs.device)
+        return inputs.view(batch_size, -1), inputs.new_zeros(batch_size).to(inputs.device)
 
     def inverse(self, inputs, context=None):
         batch_size = inputs.shape[0]
-        return inputs.view(batch_size, self.c, self.h, self.w), torch.zeros(batch_size).to(inputs.device)
+        return inputs.view(batch_size, self.c, self.h, self.w), inputs.new_zeros(batch_size).to(inputs.device)
 
 
 def product_except_batch(x):
@@ -183,7 +183,7 @@ class fComposite(transforms.Transform):
             log_prob = 0
         if self.standard_ae:
             return output, log_prob
-            # return output, torch.zeros_like(log_prob)
+            # return output, inputs.new_zeros_like(log_prob)
         else:
             return output, log_abs + log_prob
 
@@ -217,13 +217,13 @@ class fMLP(nflows.transforms.Transform):
         output = self.F(x)
         likelihood_contr = self.get_likelihood_contr()
         if self.direct_inference:
-            likelihood_cond = torch.zeros(x.shape[0]).to(x.device)
+            likelihood_cond = x.new_zeros(x.shape[0]).to(x.device)
         else:
             # likelihood_cond = self.decoder.log_prob(x, context=output)
             likelihood_cond = self.decoder.log_prob(x.repeat_interleave(output.shape[1], 0), context=output.view(-1, 1))
             likelihood_cond = likelihood_cond.view(x.shape[0], -1).sum(-1)
         m = self.F.weight.shape[1]
-        total_likelihood_contr = likelihood_contr + likelihood_cond # / m
+        total_likelihood_contr = (likelihood_contr + likelihood_cond) / m
         # total_likelihood_contr = likelihood_contr + likelihood_cond / m + np.log(m) / m
         return output, total_likelihood_contr
 
@@ -267,7 +267,7 @@ class InferenceMLP(nflows.transforms.Transform):
             cond_part = self.V(samples.squeeze())
         else:
             cond_part = 0
-            log_prob = torch.zeros(z.shape[0])
+            log_prob = z.new_zeros(z.shape[0])
         x, like = self.F.inverse(z - cond_part, context=context)
         if self.dim_reduc:
             x = torch.cat((x, samples.squeeze()), 1)
@@ -290,7 +290,7 @@ class GenerativeMLP(nflows.transforms.Transform):
         return torch.cat((x, samples.squeeze()), 1), -likelihood_contr.view(-1)
 
     def inverse(self, z, context=None):
-        return z[:, :self.in_nodes], torch.zeros(z.shape[0])
+        return z[:, :self.in_nodes], z.new_zeros(z.shape[0])
 
 
 class TanhLayer(nflows.transforms.Transform):
@@ -442,7 +442,7 @@ class NByOneStandardConv(nflows.transforms.Transform):
 
     def make_an_image(self, batch_size, samples, inverse_s=None):
         samples = samples.view(batch_size, -1, self.n_dropped)
-        x_preform = torch.zeros(*samples.shape[:-1], len(self.mx))
+        x_preform = samples.new_zeros(*samples.shape[:-1], len(self.mx))
         x_preform[..., self.mx] = samples
         if inverse_s is not None:
             x_preform[..., ~self.mx] = inverse_s
@@ -670,7 +670,7 @@ class NByOneInnConv(nflows.transforms.Transform):
 
     def make_an_image(self, batch_size, samples, inverse_s=None):
         samples = samples.view(batch_size, -1, self.n_dropped)
-        x_preform = torch.zeros(*samples.shape[:-1], len(self.mx))
+        x_preform = samples.new_zeros(*samples.shape[:-1], len(self.mx))
         x_preform[..., self.mx] = samples
         if inverse_s is not None:
             x_preform[..., ~self.mx] = inverse_s
@@ -691,7 +691,7 @@ class NByOneInnConv(nflows.transforms.Transform):
         #                        almost_x.view(batch_size, 3, int(self.output_image_size ** 2)).transpose(1, 2))
         x = self.make_an_image(batch_size, samples,
                                almost_x.view(batch_size, 3, -1).transpose(1, 2))
-        return x, torch.zeros(batch_size)
+        return x, z.new_zeros(batch_size)
 
 
 # class NByOneStandardConv(nflows.transforms.Transform):
@@ -848,8 +848,8 @@ class NByOneConv(nflows.transforms.Transform):
         #     convolving_not_possible((h, w))
         # new_w = w - int(w / self.width)
         new_w = w - w // self.width
-        output = torch.zeros((c, batch_size, h, new_w))
-        likelihood_contribution = torch.zeros((batch_size,))  # 0
+        output = inputs.new_zeros((c, batch_size, h, new_w))
+        likelihood_contribution = inputs.new_zeros((batch_size,))  # 0
         inputs = inputs.permute(1, 0, 2, 3)
         for i, channel in enumerate(inputs):
             channel, mixer_contrib = self.component_mixer[i].forward(channel.reshape(-1, self.width))
@@ -878,12 +878,12 @@ class NByOneConv(nflows.transforms.Transform):
             not_an_image_exception()
         batch_size, c, h, w = inputs.shape
         new_w = w + w // (self.width - 1)
-        output = torch.zeros((c, batch_size, h, new_w))
+        output = inputs.new_zeros((c, batch_size, h, new_w))
         likelihood_contribution = 0
         inputs = inputs.permute(1, 0, 2, 3)
         for i, channel in enumerate(inputs):
             channel = channel.reshape(-1, self.width - 1)
-            output_temp = torch.zeros((channel.shape[0], channel.shape[1] + 1))
+            output_temp = inputs.new_zeros((channel.shape[0], channel.shape[1] + 1))
             one_d_context = channel
             input_dropped = self.one_dim_flow[i].sample(1, context=one_d_context).squeeze().view(-1, 1)
 
@@ -906,7 +906,7 @@ class NByOneConv(nflows.transforms.Transform):
 
     def inverse(self, inputs, context=None):
         n_w_to_take = 0  # w - w % (self.width - 1)
-        baggage = torch.zeros_like(inputs)[..., :n_w_to_take]
+        baggage = inputs.new_zeros(inputs)[..., :n_w_to_take]
         output, likelihood = self._unpadded_inverse(inputs, context=context)
         output = torch.cat((output, baggage), -1)
         return output, likelihood
@@ -937,8 +937,8 @@ class NByOneSlice(NByOneConv):
             not_an_image_exception()
         batch_size, c, h, w = inputs.shape
         new_w = w - w // self.width
-        output = torch.zeros((c, batch_size, h, new_w))
-        likelihood_contribution = torch.zeros((batch_size,))  # 0
+        output = inputs.new_zeros((c, batch_size, h, new_w))
+        likelihood_contribution = inputs.new_zeros((batch_size,))  # 0
         inputs = inputs.permute(1, 0, 2, 3)
         for i, channel in enumerate(inputs):
             channel, mixer_contrib = self.component_mixer[i].forward(channel.reshape(-1, self.width))
@@ -958,12 +958,12 @@ class NByOneSlice(NByOneConv):
             not_an_image_exception()
         batch_size, c, h, w = inputs.shape
         new_w = w + w // (self.width - 1)
-        output = torch.zeros((c, batch_size, h, new_w))
+        output = inputs.new_zeros((c, batch_size, h, new_w))
         likelihood_contribution = 0
         inputs = inputs.permute(1, 0, 2, 3)
         for i, channel in enumerate(inputs):
             channel = channel.reshape(-1, self.width - 1)
-            output_temp = torch.zeros((channel.shape[0], channel.shape[1] + 1))
+            output_temp = inputs.new_zeros((channel.shape[0], channel.shape[1] + 1))
             z = channel
             input_dropped = self.one_dim_flow[i].sample(1, context=z).squeeze().view(-1, 1)
 
@@ -984,11 +984,11 @@ class MakeAnImage(nflows.transforms.Transform):
 
     def forward(self, inputs, context=None):
         batch_size, width = inputs.shape
-        return inputs.view(batch_size, 1, 1, width), torch.zeros(batch_size)
+        return inputs.view(batch_size, 1, 1, width), inputs.new_zeros(batch_size)
 
     def inverse(self, inputs, context=None):
         batch_size, _, _, width = inputs.shape
-        return inputs.view(batch_size, width), torch.zeros(batch_size)
+        return inputs.view(batch_size, width), inputs.new_zeros(batch_size)
 
 
 class UnMakeAnImage(MakeAnImage):
@@ -1290,7 +1290,7 @@ class surRqNSF(transforms.PiecewiseRationalQuadraticCouplingTransform):
         output, log_contr = super().inverse(inputs, context=context)
         # return output, log_contr + likelihood
         # TODO: return the correct likelihood
-        return output, torch.zeros(inputs.shape[0]).to(inputs.device)
+        return output, inputs.new_zeros(inputs.shape[0]).to(inputs.device)
 
 
 class BaseCouplingFunnelAlt(nn.Module):

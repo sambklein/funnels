@@ -90,7 +90,7 @@ def parse_args():
                         help='Spline tail bound.')
 
     # Dataset and training parameters
-    parser.add_argument('--dataset', type=str, default='mnist',
+    parser.add_argument('--dataset', type=str, default='cifar-10-fast',
                         help='The name of the plane dataset on which to train.')
     # parser.add_argument('--dataset', type=str, default='imagenet-64-fast',
     #                     help='The name of the plane dataset on which to train.')
@@ -110,7 +110,7 @@ def parse_args():
                         help='The min eta in cosine annealing schedule.')
     parser.add_argument('--warmup_fraction', type=float, default=0.0,
                         help='The warmp up fractionof the training steps.')
-    parser.add_argument('--num_steps', type=int, default=200000,
+    parser.add_argument('--num_steps', type=int, default=10,
                         help='The number of training steps to run for.')
 
     # reproducibility
@@ -359,7 +359,6 @@ class RotateImageTransform(transforms.Transform):
 def funnel_conv(num_channels, hidden_channels, image_width):
     step_transforms = []
 
-    # TODO: does including this make much of a difference?
     if actnorm:
         step_transforms.append(transforms.ActNorm(num_channels))
 
@@ -923,8 +922,8 @@ def train_and_generate_images():
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    if torch.cuda.is_available():
-        torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    # if torch.cuda.is_available():
+    #     torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
     flow = create_flow((c, h, w))
     print(f'There are {get_num_parameters(flow)} params')

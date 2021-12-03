@@ -1,6 +1,8 @@
 # This script, and the data it depends on, were taken from https://github.com/bayesiains/nsf/blob/master/experiments/uci.py
 import argparse
 import json
+from contextlib import contextmanager
+
 import numpy as np
 import torch
 import os
@@ -116,8 +118,6 @@ torch.manual_seed(args.seed)
 np.random.seed(args.seed)
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-if torch.cuda.is_available():
-    torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
 # assert torch.cuda.is_available()
 # device = torch.device('cuda')
@@ -151,6 +151,9 @@ test_loader = data.DataLoader(
     shuffle=False,
     drop_last=False
 )
+
+# if torch.cuda.is_available():
+#     torch.set_default_tensor_type('torch.cuda.FloatTensor')
 
 features = train_dataset.dim
 
@@ -431,15 +434,28 @@ filename = os.path.join(log_dir, 'config.json')
 with open(filename, 'w') as file:
     json.dump(vars(args), file)
 
+@contextmanager
+def on_cpu():
+    """
+    This sets a context where the default tensor type is cpu, seems necessary on Yggdrasil but not Baobab, and slows
+    down evaluation significantly.
+    """
+    # torch.set_default_tensor_type(torch.FloatTensor)
+    # yield
+    # torch.set_default_tensor_type(torch.cuda.FloatTensor)
+    0
+    yield
+    0
+
 tbar = tqdm(range(args.num_training_steps))
 best_val_score = torch.tensor(-1e10)
 for step in tbar:
+    with on_cpu():
+        batch = next(train_generator).to(device)
     flow.train()
     if args.anneal_learning_rate:
         scheduler.step()
     optimizer.zero_grad()
-
-    batch = next(train_generator).to(device)
     log_density = flow.log_prob(batch)
     loss = - torch.mean(log_density)
     if loss.isnan():
@@ -464,10 +480,11 @@ for step in tbar:
         with torch.no_grad():
             # compute validation score
             running_val_log_density = 0
-            for val_batch in val_loader:
-                log_density_val = flow.log_prob(val_batch.to(device).detach())
-                mean_log_density_val = torch.mean(log_density_val).detach()
-                running_val_log_density += mean_log_density_val
+            with on_cpu():
+                for val_batch in val_loader:
+                    log_density_val = flow.log_prob(val_batch.to(device).detach())
+                    mean_log_density_val = torch.mean(log_density_val).detach()
+                    running_val_log_density += mean_log_density_val
             running_val_log_density /= len(val_loader)
 
         if running_val_log_density > best_val_score:
@@ -507,11 +524,12 @@ flow.eval()
 with torch.no_grad():
     log_likelihood = torch.Tensor([])
     for batch in tqdm(test_loader):
-        log_density = flow.log_prob(batch.to(device))
-        log_likelihood = torch.cat([
-            log_likelihood,
-            log_density
-        ])
+        with set_default_tensor_type():
+            log_density = flow.log_prob(batch.to(device)) 
+            log_likelihood = torch.cat([
+                log_likelihood,
+                log_density
+            ])
 path = os.path.join(log_dir, '{}-{}-log-likelihood.npy'.format(
     args.dataset_name,
     args.base_transform_type

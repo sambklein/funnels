@@ -60,7 +60,7 @@ def parse_args():
                         help='The name of the plane dataset on which to train.')
     parser.add_argument('--batch_size', type=int, default=1000,
                         help='Whether to make the additional layers surVAE layers.')
-    parser.add_argument('--n_epochs', type=int, default=10,
+    parser.add_argument('--n_epochs', type=int, default=100,
                         help='Whether to make the additional layers surVAE layers.')
     parser.add_argument('--lr', type=float, default=0.001,
                         help='Whether to make the additional layers surVAE layers.')
@@ -142,9 +142,9 @@ def checkerboard_test():
 
     dim = out_dim
 
-    if torch.cuda.is_available():
-        device = torch.device('cuda')
-        torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    # if torch.cuda.is_available():
+    #     device = torch.device('cuda')
+    #     torch.set_default_tensor_type('torch.cuda.FloatTensor')
     bd2 = nflows.distributions.StandardNormal([inp_dim])
     trans = get_transform(inp_dim, context_features=out_dim, tail_bound=4, num_bins=5, nstack=4)
     decoder = flows.Flow(trans, bd2) if direct_inference else None
@@ -238,7 +238,7 @@ def checkerboard_test():
     flow.eval()
 
     # Plot the model density
-    test_bs = int(1e5)
+    test_bs = int(1e4)
     n_batches = int(np.ceil(args.n_test / test_bs))
     scores_uniform = torch.empty((n_batches, test_bs))
     encoding = torch.empty((n_batches, test_bs, dim))
