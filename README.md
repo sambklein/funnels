@@ -1,12 +1,21 @@
 # Funnels
 
-This repository contains the code needed to 
+This repository contains the code needed to reproduce the experiments from the paper:
 
-```angular2html
 
-```
+> Funnels: Exact maximum likelihood with dimensionality reduction.
 
+## Usage
 The environment variable REPOROOT must be set to point to the top level of the repository.
+Once the container has been built
+
+## Dependencies
+See `requirements.txt` for the necessarypip packages to be installed into the container built using `.gitlab-ci.yml`.
+
+## Data
+
+The [preprocessed datasets for MAF experiments](https://zenodo.org/record/1161203#.YaomofHMKji) was used for the density
+estimation comparisons.
 
 All image experiments have the args saved in json, with cifar-10 and imagenet funnel experiments run
 with `--model 'funnel_conv'`
