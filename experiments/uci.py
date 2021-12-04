@@ -58,7 +58,7 @@ parser.add_argument('--grad_norm_clip_value', type=float, default=5.,
                     help='Value by which to clip norm of gradients.')
 
 # VAE details
-parser.add_argument('--vae', type=int, default=2, help='Train a vae?')
+parser.add_argument('--vae', type=int, default=0, help='Train a vae?')
 parser.add_argument('--vae_width', type=int, default=512, help='VAE encoder/decoder width')
 parser.add_argument('--vae_depth', type=int, default=2, help='VAE encoder/decoder depth')
 parser.add_argument('--vae_drp', type=float, default=0.0, help='Dropout in VAE')
@@ -67,6 +67,8 @@ parser.add_argument('--vae_layer_norm', type=int, default=0, help='Use layer nor
 
 # MLP details
 parser.add_argument('--mlp', type=int, default=2, help='Train a vae?')
+parser.add_argument('--mlp_bins', type=int, default=10, help='Number of VAE bins?')
+parser.add_argument('--mlp_tb', type=float, default=2, help='SPLEEN tali_bound?')
 
 # flow details
 parser.add_argument('--base_transform_type', type=str, default='gas',
@@ -373,17 +375,20 @@ if args.vae:
 elif args.mlp:
     print('Training a F-MLP')
     ls = features - args.mlp
+    intermediate = features - int(args.mlp / 2)
     def createMLP(features):
         activ = sur_flows.SPLEEN
-        activ_kwargs = {'tail_bound': 4., 'tails': 'linear', 'num_bins': 10}
+        activ_kwargs = {'tail_bound': args.mlp_tb, 'tails': 'linear', 'num_bins': args.mlp_bins}
         transform_list = [
             sur_flows.InferenceMLP(features, features),
             activ(**activ_kwargs),
             sur_flows.InferenceMLP(features, features),
             activ(**activ_kwargs),
-            sur_flows.InferenceMLP(features, ls),
+            sur_flows.InferenceMLP(features, intermediate),
             activ(**activ_kwargs),
-            sur_flows.InferenceMLP(ls, ls),
+            sur_flows.InferenceMLP(intermediate, intermediate),
+            activ(**activ_kwargs),
+            sur_flows.InferenceMLP(intermediate, ls),
             activ(**activ_kwargs),
             sur_flows.InferenceMLP(ls, ls),
             activ(**activ_kwargs),
@@ -493,23 +498,23 @@ for step in tbar:
                                 '{}-best-val-{}.t'.format(args.dataset_name, timestamp))
             torch.save(flow.state_dict(), path)
 
-        # compute reconstruction
-        with torch.no_grad():
-            test_batch_noise = flow.transform_to_noise(test_batch)
-            test_batch_reconstructed, _ = flow._transform.inverse(test_batch_noise)
-        errors = test_batch - test_batch_reconstructed
-        max_abs_relative_error = torch.abs(errors / test_batch).max()
-        average_abs_relative_error = torch.abs(errors / test_batch).mean()
-        writer.add_scalar('max-abs-relative-error',
-                          max_abs_relative_error, global_step=step)
-        writer.add_scalar('average-abs-relative-error',
-                          average_abs_relative_error, global_step=step)
+        # # compute reconstruction
+        # with torch.no_grad():
+        #     test_batch_noise = flow.transform_to_noise(test_batch)
+        #     test_batch_reconstructed, _ = flow._transform.inverse(test_batch_noise)
+        # errors = test_batch - test_batch_reconstructed
+        # max_abs_relative_error = torch.abs(errors / test_batch).max()
+        # average_abs_relative_error = torch.abs(errors / test_batch).mean()
+        # writer.add_scalar('max-abs-relative-error',
+        #                   max_abs_relative_error, global_step=step)
+        # writer.add_scalar('average-abs-relative-error',
+        #                   average_abs_relative_error, global_step=step)
 
         summaries = {
             'val': running_val_log_density.item(),
             'best-val': best_val_score.item(),
-            'max-abs-relative-error': max_abs_relative_error.item(),
-            'average-abs-relative-error': average_abs_relative_error.item()
+            # 'max-abs-relative-error': max_abs_relative_error.item(),
+            # 'average-abs-relative-error': average_abs_relative_error.item()
         }
         for summary, value in summaries.items():
             writer.add_scalar(tag=summary, scalar_value=value, global_step=step)
