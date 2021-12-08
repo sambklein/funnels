@@ -10,7 +10,9 @@ import matplotlib.pyplot as plt
 import time
 
 from funnels.data.plane import load_plane_dataset
+from funnels.models.VAE import VAE
 from funnels.models.flows import get_transform
+from funnels.models.nn.MLPs import dense_net
 from funnels.models.sur_flows import SurNSF
 from funnels.data.hyper_dim import HyperCheckerboardDataset
 
@@ -57,11 +59,11 @@ def parse_args():
     # Dataset and training parameters
     parser.add_argument('--dataset', type=str, default='checkerboard',
                         help='The name of the plane dataset on which to train.')
-    parser.add_argument('--batch_size', type=int, default=100,
+    parser.add_argument('--batch_size', type=int, default=1000,
                         help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--n_epochs', type=int, default=10,
                         help='Whether to make the additional layers funnels layers.')
-    parser.add_argument('--lr', type=float, default=0.001,
+    parser.add_argument('--lr', type=float, default=0.001, 
                         help='Whether to make the additional layers funnels layers.')
     parser.add_argument('--ndata', type=int, default=int(1e5),
                         help='Whether to make the additional layers funnels layers.')
@@ -91,41 +93,64 @@ def checkerboard_test():
 
     spline = args.splines
 
-    # Set up and define the model
-    transform_list = [get_transform(inp_dim, nodes=args.nodes,
-                                    nstack=nstack,
-                                    num_blocks=args.num_blocks,
-                                    tail_bound=args.tail_bound,
-                                    num_bins=args.num_bins,
-                                    tails=args.tails,
-                                    spline=spline)]
+    def get_t(vae=0):
+        # Set up and define the model
+        context = vae
+        if vae == 0:
+            context = None
+        transform_list = [get_transform(inp_dim, nodes=args.nodes,
+                                        nstack=nstack,
+                                        num_blocks=args.num_blocks,
+                                        tail_bound=args.tail_bound,
+                                        num_bins=args.num_bins,
+                                        tails=args.tails,
+                                        spline=spline,
+                                        context_features=context)]
 
-    # Add the funnels layers
-    dim = inp_dim
-    sur_layers = []
-    for _ in range(args.num_add * args.add_sur):
-        sur_layers += [SurNSF(dim, args.nodes,
-                              num_blocks=args.num_blocks,
-                              tail_bound=args.tail_bound,
-                              num_bins=args.num_bins,
-                              tails=args.tails,
-                              spline=spline)
-                       ]
-        dim -= 1
-        if args.bnorm:
-            sur_layers += [
-                transforms.BatchNorm(dim)
-            ]
-        # transform_list += [transforms.ReversePermutation(dim)]
-        sur_layers += [transforms.LULinear(dim)]
+        # Add the funnels layers
+        dim = inp_dim
+        sur_layers = []
+        if not vae:
+            for _ in range(args.num_add * args.add_sur):
+                sur_layers += [SurNSF(dim, args.nodes,
+                                      num_blocks=args.num_blocks,
+                                      tail_bound=args.tail_bound,
+                                      num_bins=args.num_bins,
+                                      tails=args.tails,
+                                      spline=spline)
+                               ]
+                dim -= 1
+                if args.bnorm:
+                    sur_layers += [
+                        transforms.BatchNorm(dim)
+                    ]
+                # transform_list += [transforms.ReversePermutation(dim)]
+                sur_layers += [transforms.LULinear(dim)]
 
-    transform_list += sur_layers[:-1]
+        transform_list += sur_layers[:-1]
+        return transforms.CompositeTransform(transform_list), dim
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f'Running on {device}')
-    transform = transforms.CompositeTransform(transform_list)
-    base_dist = nflows.distributions.StandardNormal([out_dim])
-    flow = flows.Flow(transform, base_dist).to(device)
+    # TODO: kwargs
+    args.vae = True
+    args.vae_depth = 3
+    args.vae_width = 64
+    if args.vae:
+        depth = args.vae_depth
+        width = args.vae_width
+        # layers = [512, 512, 512]
+        layers = [width] * depth
+        encoder = dense_net(inp_dim, 1, layers=layers, vae=True)
+        decoder_trans, _ = get_t(vae=1)
+        base_dist_trans = nflows.distributions.StandardNormal([out_dim])
+        decoder = flows.Flow(decoder_trans, base_dist_trans).to(device)
+        flow = VAE(inp_dim, 1, layers, encoder=encoder, decoder=decoder, nsf_dec=True).to(device)
+        dim = 1
+    else:
+        transform, dim = get_t()
+        base_dist = nflows.distributions.StandardNormal([out_dim])
+        flow = flows.Flow(transform, base_dist).to(device)
     print(f'There are {get_num_parameters(flow)} params')
 
     # Set up the dataset and training parameters
@@ -182,7 +207,11 @@ def checkerboard_test():
             with open(svo.save_name('timing', extension='txt'), 'w') as f:
                 f.write('{}\n'.format(time.time() - start_time))
 
-        torch.save(transform.state_dict(), svo.save_name('model', extension=''))
+        if args.vae:
+            torch.save(encoder.state_dict(), svo.save_name('model', extension=''))
+            torch.save(decoder.state_dict(), svo.save_name('model', extension=''))
+        else:
+            torch.save(transform.state_dict(), svo.save_name('model', extension=''))
 
         print('Finished Training')
 

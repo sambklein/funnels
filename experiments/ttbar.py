@@ -146,7 +146,8 @@ def ttbar_experiment():
                                     tail_bound=args.tail_bound,
                                     num_bins=args.num_bins,
                                     tails=args.tails,
-                                    spline=spline)]
+                                    spline=spline,
+                                    context_features=None)]
 
     # Add the funnels layers
     dim = inp_dim

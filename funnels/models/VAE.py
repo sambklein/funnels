@@ -8,11 +8,12 @@ from funnels.models.nn.MLPs import dense_net
 
 class transform(nn.Module):
 
-    def __init__(self, encoder, decoder, latent_size):
+    def __init__(self, encoder, decoder, latent_size, nsf_dec=False):
         super(transform, self).__init__()
         self.encoder = encoder
         self.decoder = decoder
         self.latent_size = latent_size
+        self.nsf_dec = nsf_dec
 
     def forward(self, data):
         z_mean, z_log_sigma = self.encoder(data)
@@ -20,15 +21,18 @@ class transform(nn.Module):
         return z_mean + torch.exp(z_log_sigma) * epsilon
 
     def inverse(self, data):
-        x_prime, log_var = self.decoder(data)
-        return x_prime, torch.zeros(data.shape[0])
+        if self.nsf_dec:
+            self.decoder.sample(1, context=data).squeeze()
+        else:
+            x_prime, log_var = self.decoder(data)
+            return x_prime, torch.zeros(data.shape[0])
 
 
 # TODO: clean up the mess that this class has become
 class VAE(nn.Module):
 
     def __init__(self, input_dim, latent_size, layers, activation=torch.relu, encoder=None, decoder=None,
-                 preprocess=None, dropout=0.0, batch_norm=False, layer_norm=False):
+                 preprocess=None, dropout=0.0, batch_norm=False, layer_norm=False, nsf_dec=False):
         super(VAE, self).__init__()
         self.latent_size = latent_size
         self.preprocess = preprocess
@@ -43,7 +47,8 @@ class VAE(nn.Module):
         else:
             self.decoder = decoder
         self.recon_loss = nn.MSELoss(reduce=False)
-        self._transform = transform(self.encoder, self.decoder, latent_size)
+        self._transform = transform(self.encoder, self.decoder, latent_size, nsf_dec=nsf_dec)
+        self.nsf_dec = nsf_dec
 
     def transform_to_noise(self, data):
         return self._transform(data)
@@ -92,8 +97,11 @@ class VAE(nn.Module):
         z = q.rsample()
         kl_loss = self.kl_divergence(z, z_mean, std)
 
-        x_prime, log_scale = self.decoder(z)
-        per_sample_likelihood = self.likelihood(x_prime, log_scale, data + 0.5)
+        if self.nsf_dec:
+            per_sample_likelihood = self.decoder.log_prob(data, context=z)
+        else:
+            x_prime, log_scale = self.decoder(z)
+            per_sample_likelihood = self.likelihood(x_prime, log_scale, data + 0.5)
 
         return per_sample_likelihood - kl_loss + prep_likelihood
 
@@ -111,12 +119,14 @@ class VAE(nn.Module):
         return z_mean + torch.exp(z_log_sigma) * epsilon
 
     def decode(self, sample):
-        mu, log_scale = self.decoder(sample)
-        std = self.get_scale(log_scale)
-        return torch.distributions.Normal(mu, std).sample([1])[0]
+        if self.nsf_dec:
+            return self.decoder.sample(1, context=sample).squeeze()
+        else:
+            mu, log_scale = self.decoder(sample)
+            std = self.get_scale(log_scale)
+            return torch.distributions.Normal(mu, std).sample([1])[0]
 
     def sample_dec(self, encoding):
-        # return self.decoder(self.base_dist_sample(encoding))
         return self.decode(self.base_dist_sample(encoding))
 
     def sample(self, num, temperature=1):
